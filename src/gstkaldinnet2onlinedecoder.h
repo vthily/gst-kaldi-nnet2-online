@@ -80,7 +80,9 @@ struct _Gstkaldinnet2onlinedecoder {
 
   gchar* model_rspecifier;
   gchar* fst_rspecifier;
+  gchar* hfst_rspecifier; // @tlvu
   gchar* word_syms_filename;
+  gchar* hword_syms_filename; // @tlvu
   gchar* phone_syms_filename;
   gchar* word_boundary_info_filename;
 
@@ -102,7 +104,9 @@ struct _Gstkaldinnet2onlinedecoder {
   nnet3::AmNnetSimple *am_nnet3;
   nnet3::DecodableNnetSimpleLoopedInfo *decodable_info_nnet3;
   fst::Fst<fst::StdArc> *decode_fst;
+  fst::Fst<fst::StdArc> *decode_hfst; // @tlvu
   fst::SymbolTable *word_syms;
+  fst::SymbolTable *hword_syms; // @tlvu
   fst::SymbolTable *phone_syms;
   WordBoundaryInfo *word_boundary_info;
   int sample_rate;
