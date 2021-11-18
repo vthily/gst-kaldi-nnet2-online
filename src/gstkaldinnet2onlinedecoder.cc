@@ -1460,14 +1460,15 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
     if (remaining_wave_part->Dim() > 0) {
       GST_DEBUG_OBJECT(filter, "Submitting remaining wave of size %d", remaining_wave_part->Dim());
       decoder.AcceptWaveform(filter->sample_rate, *remaining_wave_part);
+      // @tlvu Nov 18, 2021
+      hwdecoder.AcceptWaveform(filter->sample_rate, *remaining_wave_part);
+
       filter->total_time_decoded += 1.0 * remaining_wave_part->Dim() / filter->sample_rate;
       while (decoder.NumFramesReceivedApprox() - decoder.NumFramesDecoded() > 100) {
         Sleep(0.1);
       }
       
       // @tlvu Nov 17, 2021
-      hwdecoder.AcceptWaveform(filter->sample_rate, *remaining_wave_part);
-      filter->total_time_decoded += 1.0 * remaining_wave_part->Dim() / filter->sample_rate;
       while (hwdecoder.NumFramesReceivedApprox() - hwdecoder.NumFramesDecoded() > 100) {
         Sleep(0.1);
       }
@@ -1523,7 +1524,7 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
             && decoder.EndpointDetected(*(filter->endpoint_config))) {
           decoder.TerminateDecoding();
           GST_DEBUG_OBJECT(filter, "Endpoint detected!");
-          break;
+          // break; // @tlvu Nov 18, 2021: Comment out, to use later
         }
         // @tlvu Nov 17, 2021
         if ((hwdecoder.NumFramesDecoded() > 0)
@@ -1543,10 +1544,12 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
         gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
         
         // @tlvu Nov 17, 2021
-        Lattice hwlat;
-        hwdecoder.GetBestPath(false, &hwlat, NULL);
-        gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
-        
+        if (hwdecoder.NumFramesDecoded() > 0) {
+          Lattice hwlat;
+	  hwdecoder.GetBestPath(false, &hwlat, NULL);
+          gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
+	}
+
         last_traceback += traceback_period_secs;
       }
     }
@@ -1585,6 +1588,10 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
         if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_lat)) {
           clat = rescored_lat;
         }
+        // CompactLattice rescored_hwlat;
+        // if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_hwlat)) {
+        //   hw_clat = rescored_hwlat;
+        // }
       }
 
       guint num_words = 0;
@@ -1592,6 +1599,14 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
       if (num_words >= filter->min_words_for_ivector) {
         // Only update adaptation state if the utterance contained enough words
         decoder.GetAdaptationState(filter->adaptation_state);
+      }
+
+      // @tlvu Nov 18, 2021
+      guint num_hwords = 0;
+      gst_kaldinnet2onlinedecoder_final_result(filter, hw_clat, &num_hwords);
+      if (num_hwords >= filter->min_words_for_ivector) {
+        // Only update adaptation state if the utterance contained enough words
+        hwdecoder.GetAdaptationState(filter->adaptation_state);
       }
     } else {
       GST_DEBUG_OBJECT(filter, "Less than 0.1 seconds decoded, discarding");
@@ -1610,6 +1625,11 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
                                       *(filter->trans_model), 
                                       *(filter->am_nnet2),
                                       *(filter->decode_fst),
+                                      &feature_pipeline);
+  SingleUtteranceNnet2Decoder hwdecoder(*(filter->nnet2_decoding_config),
+                                      *(filter->trans_model),
+                                      *(filter->am_nnet2),
+                                      *(filter->decode_hfst),
                                       &feature_pipeline);
   OnlineSilenceWeighting silence_weighting(*(filter->trans_model),
           *(filter->silence_weighting_config));
@@ -1631,13 +1651,17 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     if (silence_weighting.Active() && 
         feature_pipeline.IvectorFeature() != NULL) {
       silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
+      silence_weighting.ComputeCurrentTraceback(hwdecoder.Decoder());
       silence_weighting.GetDeltaWeights(feature_pipeline.IvectorFeature()->NumFramesReady(), 0,
                                         &delta_weights);
       feature_pipeline.IvectorFeature()->UpdateFrameWeights(delta_weights);
     }
 
     decoder.AdvanceDecoding();
+    hwdecoder.AdvanceDecoding();
+
     GST_DEBUG_OBJECT(filter, "%d frames decoded", decoder.NumFramesDecoded());
+    GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder.NumFramesDecoded());
     num_seconds_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
     filter->total_time_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
     GST_DEBUG_OBJECT(filter, "Total amount of audio processed: %f seconds", filter->total_time_decoded);
@@ -1646,16 +1670,22 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     }
     if (filter->do_endpointing
         && (decoder.NumFramesDecoded() > 0)
-        && decoder.EndpointDetected(*(filter->endpoint_config))) {
+        && decoder.EndpointDetected(*(filter->endpoint_config))
+	&& (hwdecoder.NumFramesDecoded() > 0) 
+	&& hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
       GST_DEBUG_OBJECT(filter, "Endpoint detected!");
       break;
     }
 
     if ((num_seconds_decoded - last_traceback > traceback_period_secs)
-        && (decoder.NumFramesDecoded() > 0)) {
+        && (decoder.NumFramesDecoded() > 0) && (hwdecoder.NumFramesDecoded() > 0)) {
       Lattice lat;
       decoder.GetBestPath(false, &lat);
       gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+
+      Lattice hwlat;
+      hwdecoder.GetBestPath(false, &hwlat);
+      gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
       last_traceback += traceback_period_secs;
     }
   }
@@ -1663,9 +1693,15 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
   if (num_seconds_decoded > 0.1) {
     GST_DEBUG_OBJECT(filter, "Getting lattice..");
     decoder.FinalizeDecoding();
+    hwdecoder.FinalizeDecoding();
+
     CompactLattice clat;
     bool end_of_utterance = true;
     decoder.GetLattice(end_of_utterance, &clat);
+
+    CompactLattice hwlat;
+    decoder.GetLattice(end_of_utterance, &hwlat);
+
     GST_DEBUG_OBJECT(filter, "Lattice done");
     if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
       GST_DEBUG_OBJECT(filter, "Rescoring lattice with a big LM");
@@ -1673,11 +1709,19 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
       if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_lat)) {
         clat = rescored_lat;
       }
+      CompactLattice rescored_hwlat;
+      if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hwlat, rescored_hwlat)) {
+        hwlat = rescored_hwlat;
+      }
     }
 
     guint num_words = 0;
     gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
-    if (num_words >= filter->min_words_for_ivector) {
+
+    guint num_hwords = 0;
+    gst_kaldinnet2onlinedecoder_final_result(filter, hwlat, &num_hwords);
+
+    if ((num_words >= filter->min_words_for_ivector) && (num_hwords >= filter->min_words_for_ivector)) {
       // Only update adaptation state if the utterance contained enough words
       feature_pipeline.GetAdaptationState(filter->adaptation_state);
       feature_pipeline.GetCmvnState(filter->cmvn_state);
@@ -2407,6 +2451,7 @@ static void gst_kaldinnet2onlinedecoder_finalize(GObject * object) {
 
   g_free(filter->model_rspecifier);
   g_free(filter->fst_rspecifier);
+  g_free(filter->hfst_rspecifier);
   g_free(filter->word_syms_filename);
   g_free(filter->hword_syms_filename);
   g_free(filter->phone_syms_filename);
