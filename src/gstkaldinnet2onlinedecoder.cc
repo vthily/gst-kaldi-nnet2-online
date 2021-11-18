@@ -4,6 +4,7 @@
  * Copyright 2014 Johns Hopkins University (author: Daniel Povey)
  * Copyright 2015 University of Sheffield (author: Ricard Marxer <r.marxer@sheffield.ac.uk>)
  * Copyright 2016 Qatar Computing Research Institute (author: Yifan Zhang)
+ * Copyright 2021 Abax.AI (author: Chunlei, Yufei, Ly)
  *
  *
  *
@@ -97,6 +98,7 @@ enum {
   PROP_CMVN_STATE,
   PROP_INVERSE_SCALE,
   PROP_LMWT_SCALE,
+  PROP_HLMWT_SCALE, // @tlvu Nov 18, 2021
   PROP_CHUNK_LENGTH_IN_SECS,
   PROP_TRACEBACK_PERIOD_IN_SECS,
   PROP_LM_FST,
@@ -118,6 +120,7 @@ enum {
 #define DEFAULT_PHONE_SYMS      ""
 #define DEFAULT_WORD_BOUNDARY_FILE ""
 #define DEFAULT_LMWT_SCALE	1.0
+#define DEFAULT_HLMWT_SCALE     21.0 // @tlvu Nov 18, 2021
 #define DEFAULT_CHUNK_LENGTH_IN_SECS  0.05
 #define DEFAULT_TRACEBACK_PERIOD_IN_SECS  0.5
 #define DEFAULT_USE_THREADED_DECODER false
@@ -376,6 +379,18 @@ static void gst_kaldinnet2onlinedecoder_class_init(
           DEFAULT_LMWT_SCALE,
           (GParamFlags) G_PARAM_READWRITE));
 
+  // @tlvu Nov 18, 2021
+  g_object_class_install_property(
+      gobject_class,
+      PROP_HLMWT_SCALE,
+      g_param_spec_float(
+          "hlmwt-scale", "Hotword LM weight for scaling output lattice",
+          "Hotword LM scaling for the output lattice, usually in conjunction with inverse-scaling=true",
+          G_MINFLOAT,
+          G_MAXFLOAT,
+          DEFAULT_HLMWT_SCALE,
+          (GParamFlags) G_PARAM_READWRITE));
+
   g_object_class_install_property(
       gobject_class,
       PROP_CHUNK_LENGTH_IN_SECS,
@@ -591,6 +606,8 @@ static void gst_kaldinnet2onlinedecoder_init(
   filter->sample_rate = 0;
   filter->decoding = false;
   filter->lmwt_scale = DEFAULT_LMWT_SCALE;
+  // @tlvu Nov 18, 2021
+  filter->hlmwt_scale = DEFAULT_HLMWT_SCALE;
   filter->inverse_scale = FALSE;
   filter->chunk_length_in_secs = DEFAULT_CHUNK_LENGTH_IN_SECS;
 
@@ -750,6 +767,10 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
       break;
     case PROP_LMWT_SCALE:
       filter->lmwt_scale = g_value_get_float(value);
+      break;
+    // @tlvu Nov 18, 2021
+    case PROP_HLMWT_SCALE:
+      filter->hlmwt_scale= g_value_get_float(value);
       break;
     case PROP_CHUNK_LENGTH_IN_SECS:
       filter->chunk_length_in_secs = g_value_get_float(value);
@@ -926,6 +947,10 @@ static void gst_kaldinnet2onlinedecoder_get_property(GObject * object,
       break;
     case PROP_LMWT_SCALE:
       g_value_set_float(value, filter->lmwt_scale);
+      break;
+    // @tlvu Nov 18, 2021
+    case PROP_HLMWT_SCALE:
+      g_value_set_float(value, filter->hlmwt_scale);
       break;
     case PROP_CHUNK_LENGTH_IN_SECS:
       g_value_set_float(value, filter->chunk_length_in_secs);
@@ -1119,6 +1144,29 @@ static void gst_kaldinnet2onlinedecoder_scale_lattice(
   }
 
   fst::ScaleLattice(fst::LatticeScale(filter->lmwt_scale, 1.0), &clat);
+}
+
+// @tlvu Nov 18, 2021
+static void gst_kaldinnet2onlinedecoder_scale_hwlattice(
+        Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat) {
+  if (filter->inverse_scale) {
+    BaseFloat inv_acoustic_scale = 1.0;
+    if (filter->nnet_mode == NNET2) {
+      if (filter->use_threaded_decoder) {
+        inv_acoustic_scale = 1.0 / filter->
+            nnet2_decoding_threaded_config->acoustic_scale;
+      } else {
+        inv_acoustic_scale = 1.0 / filter->nnet2_decoding_config->
+            decodable_opts.acoustic_scale;
+      }
+    } else {
+      inv_acoustic_scale = 1.0 / filter->nnet3_decodable_opts->acoustic_scale;
+    }
+
+    fst::ScaleLattice(fst::AcousticLatticeScale(inv_acoustic_scale), &clat);
+  }
+
+  fst::ScaleLattice(fst::LatticeScale(filter->hlmwt_scale, 1.0), &clat);
 }
 
 static std::string gst_kaldinnet2onlinedecoder_words_to_string(
@@ -1520,35 +1568,31 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
                          hwdecoder.NumFramesDecoded(),
                          hwdecoder.NumWaveformPiecesPending());
 
+	// @tlvu Nov 18, 2021
         if ((decoder.NumFramesDecoded() > 0)
-            && decoder.EndpointDetected(*(filter->endpoint_config))) {
+            && decoder.EndpointDetected(*(filter->endpoint_config)) 
+	    && (hwdecoder.NumFramesDecoded() > 0) 
+	    && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
           decoder.TerminateDecoding();
+	  hwdecoder.TerminateDecoding();
           GST_DEBUG_OBJECT(filter, "Endpoint detected!");
-          // break; // @tlvu Nov 18, 2021: Comment out, to use later
-        }
-        // @tlvu Nov 17, 2021
-        if ((hwdecoder.NumFramesDecoded() > 0)
-            && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
-          hwdecoder.TerminateDecoding();
-          GST_INFO_OBJECT(filter, "[HwDecoder] Endpoint detected!");
-          break;
+	  GST_INFO_OBJECT(filter, "[HwDecoder] Endpoint detected!");
+          break; 
         }
       }
       num_seconds_decoded += filter->chunk_length_in_secs;
       
-      // @tlvu Nov 17, 2021 --- TODO
+      // @tlvu Nov 18, 2021
       if ((num_seconds_decoded - last_traceback > traceback_period_secs)
-          && (decoder.NumFramesDecoded() > 0)) {
+          && (decoder.NumFramesDecoded() > 0)
+	  && (hwdecoder.NumFramesDecoded() > 0)) {
         Lattice lat;
         decoder.GetBestPath(false, &lat, NULL);
         gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
         
-        // @tlvu Nov 17, 2021
-        if (hwdecoder.NumFramesDecoded() > 0) {
-          Lattice hwlat;
-	  hwdecoder.GetBestPath(false, &hwlat, NULL);
-          gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
-	}
+        Lattice hwlat;
+	hwdecoder.GetBestPath(false, &hwlat, NULL);
+        gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
 
         last_traceback += traceback_period_secs;
       }
@@ -1588,10 +1632,10 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
         if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_lat)) {
           clat = rescored_lat;
         }
-        // CompactLattice rescored_hwlat;
-        // if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_hwlat)) {
-        //   hw_clat = rescored_hwlat;
-        // }
+        CompactLattice rescored_hwlat;
+        if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hw_clat, rescored_hwlat)) {
+          hw_clat = rescored_hwlat;
+        }
       }
 
       guint num_words = 0;
@@ -1626,6 +1670,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
                                       *(filter->am_nnet2),
                                       *(filter->decode_fst),
                                       &feature_pipeline);
+  // @tlvu Nov 18, 2021
   SingleUtteranceNnet2Decoder hwdecoder(*(filter->nnet2_decoding_config),
                                       *(filter->trans_model),
                                       *(filter->am_nnet2),
@@ -1651,6 +1696,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     if (silence_weighting.Active() && 
         feature_pipeline.IvectorFeature() != NULL) {
       silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
+      // @tlvu Nov 18, 2021
       silence_weighting.ComputeCurrentTraceback(hwdecoder.Decoder());
       silence_weighting.GetDeltaWeights(feature_pipeline.IvectorFeature()->NumFramesReady(), 0,
                                         &delta_weights);
@@ -1658,9 +1704,11 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     }
 
     decoder.AdvanceDecoding();
+    // @tlvu Nov 18, 2021
     hwdecoder.AdvanceDecoding();
 
     GST_DEBUG_OBJECT(filter, "%d frames decoded", decoder.NumFramesDecoded());
+    // @tlvu Nov 18, 2021
     GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder.NumFramesDecoded());
     num_seconds_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
     filter->total_time_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
@@ -1671,6 +1719,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     if (filter->do_endpointing
         && (decoder.NumFramesDecoded() > 0)
         && decoder.EndpointDetected(*(filter->endpoint_config))
+	// @tlvu Nov 18, 2021
 	&& (hwdecoder.NumFramesDecoded() > 0) 
 	&& hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
       GST_DEBUG_OBJECT(filter, "Endpoint detected!");
@@ -1683,6 +1732,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
       decoder.GetBestPath(false, &lat);
       gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
 
+      // @tlvu Nov 18, 2021
       Lattice hwlat;
       hwdecoder.GetBestPath(false, &hwlat);
       gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
@@ -1693,12 +1743,14 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
   if (num_seconds_decoded > 0.1) {
     GST_DEBUG_OBJECT(filter, "Getting lattice..");
     decoder.FinalizeDecoding();
+    // @tlvu Nov 18, 2021
     hwdecoder.FinalizeDecoding();
 
     CompactLattice clat;
     bool end_of_utterance = true;
     decoder.GetLattice(end_of_utterance, &clat);
 
+    // @tlvu Nov 18, 2021
     CompactLattice hwlat;
     decoder.GetLattice(end_of_utterance, &hwlat);
 
@@ -1709,6 +1761,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
       if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_lat)) {
         clat = rescored_lat;
       }
+      // @tlvu Nov 18, 2021
       CompactLattice rescored_hwlat;
       if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hwlat, rescored_hwlat)) {
         hwlat = rescored_hwlat;
@@ -1718,6 +1771,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     guint num_words = 0;
     gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
 
+    // @tlvu Nov 18, 2021
     guint num_hwords = 0;
     gst_kaldinnet2onlinedecoder_final_result(filter, hwlat, &num_hwords);
 

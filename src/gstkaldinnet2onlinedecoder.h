@@ -75,6 +75,7 @@ struct _Gstkaldinnet2onlinedecoder {
   gboolean do_endpointing;
   gboolean inverse_scale;
   float lmwt_scale;
+  float hlmwt_scale;
   GstBufferSource *audio_source;
   gboolean do_phone_alignment;
 
