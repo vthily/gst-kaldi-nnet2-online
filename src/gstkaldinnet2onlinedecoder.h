@@ -138,6 +138,12 @@ struct _Gstkaldinnet2onlinedecoderClass {
   void (*full_final_result)(GstElement *element, const gchar *result_str);
 };
 
+typedef struct  st_lat_ctm{
+  float start;
+  float dur;
+  string word;
+} lat_ctm;
+
 GType gst_kaldinnet2onlinedecoder_get_type(void);
 
 G_END_DECLS

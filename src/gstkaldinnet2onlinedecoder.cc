@@ -119,7 +119,7 @@ enum {
 #define DEFAULT_HWORD_SYMS      "" // @tlvu
 #define DEFAULT_PHONE_SYMS      ""
 #define DEFAULT_WORD_BOUNDARY_FILE ""
-#define DEFAULT_LMWT_SCALE	1.0
+#define DEFAULT_LMWT_SCALE        1.0
 #define DEFAULT_HLMWT_SCALE     21.0 // @tlvu Nov 18, 2021
 #define DEFAULT_CHUNK_LENGTH_IN_SECS  0.05
 #define DEFAULT_TRACEBACK_PERIOD_IN_SECS  0.5
@@ -811,7 +811,7 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
             filter->adaptation_state = new OnlineIvectorExtractorAdaptationState(
                 filter->feature_info->ivector_extractor_info);
           }
-		      g_free(adaptation_state_string);
+                      g_free(adaptation_state_string);
         } else {
           GST_DEBUG_OBJECT(filter, "Resetting adaptation state");
           delete filter->adaptation_state;
@@ -838,7 +838,7 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
             delete filter->cmvn_state;
             gst_kaldinnet2onlinedecoder_reset_cmvn_state(filter);
           }
-		      g_free(cmvn_state_string);
+                      g_free(cmvn_state_string);
         } else {
           GST_DEBUG_OBJECT(filter, "Resetting CMVN state");
           delete filter->cmvn_state;
@@ -1146,7 +1146,13 @@ static void gst_kaldinnet2onlinedecoder_scale_lattice(
   fst::ScaleLattice(fst::LatticeScale(filter->lmwt_scale, 1.0), &clat);
 }
 
-// @tlvu Nov 18, 2021
+/**
+* @author:    
+* @modifier:  tlvu 
+* @date:      Nov 18, 2021
+* @describe:  Scale the lattice of Hotword ASR
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_scale_hwlattice(
         Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat) {
   if (filter->inverse_scale) {
@@ -1184,6 +1190,13 @@ static std::string gst_kaldinnet2onlinedecoder_words_to_string(
   return sentence.str();
 }
 
+/**
+* @author:    
+* @modifier:  tlvu 
+* @date:      Nov 18, 2021
+* @describe:  Convert the hotword to string format.
+*
+**/ 
 static std::string gst_kaldinnet2onlinedecoder_hwords_to_string(
     Gstkaldinnet2onlinedecoder *filter, const std::vector<int32> &words) {
   std::stringstream sentence;
@@ -1348,9 +1361,17 @@ static std::string gst_kaldinnet2onlinedecoder_full_final_result_to_json(
   return result;
 }
 
+/**
+* @author:    tlvu
+* @modifier:  
+* @date:      Nov 19, 2021
+* @describe:  Adding debug information to differentiate between Master and Hotword ASR
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_final_result(
     Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat,
-    guint *num_words) {
+    guint *num_words,
+    bool is_hotword=false) {
   if (clat.NumStates() == 0) {
     KALDI_WARN<< "Empty lattice.";
     return;
@@ -1368,6 +1389,16 @@ static void gst_kaldinnet2onlinedecoder_final_result(
     GST_DEBUG_OBJECT(filter, "Likelihood per frame is %f over %d frames",
         full_final_result.nbest_results[0].likelihood/full_final_result.nbest_results[0].num_frames , full_final_result.nbest_results[0].num_frames);
     GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
+    
+    // @tlvu Nov 19, 2021
+    if (is_hotword) {
+      // GST_INFO_OBJECT(filter, "Final (Hotword): %s", best_transcript.c_str());
+      std::cout << "Final (Hotword):" << ' ' << best_transcript << std::endl;
+    } else {
+      // GST_INFO_OBJECT(filter, "Final (Master): %s", best_transcript.c_str());
+      std::cout << "Final (Master):" << ' ' << best_transcript << std::endl;
+    }
+    
     guint hyp_length = best_transcript.length();
     *num_words = full_final_result.nbest_results[0].words.size();
 
@@ -1405,6 +1436,13 @@ static void gst_kaldinnet2onlinedecoder_partial_result(
   }
 }
 
+/**
+* @author:    tlvu
+* @modifier:  
+* @date:      Nov 18, 2021
+* @describe:  Get the partial result for Hotword ASR
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_partial_hwresult(
     Gstkaldinnet2onlinedecoder * filter, const Lattice lat) {
   std::vector<int32> words;
@@ -1420,7 +1458,6 @@ static void gst_kaldinnet2onlinedecoder_partial_hwresult(
                   transcript.c_str());
   }
 }
-
 
 
 static bool gst_kaldinnet2onlinedecoder_rescore_big_lm(
@@ -1478,6 +1515,59 @@ static bool gst_kaldinnet2onlinedecoder_rescore_big_lm(
   return true;
 }
 
+/**
+* @author:    chunlei
+* @modifier:  tlvu 
+* @date:      Nov 19, 2021
+* @describe:  Compute the CTM
+*
+**/ 
+static bool gst_kaldinnet2onlinedecoder_compute_ctm(Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, std::vector<lat_ctm>& ctm, bool is_hotword = false ) {
+
+  if (is_hotword) {
+	  gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
+	} else {
+	  gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
+	}
+
+	CompactLattice aligned_clat;
+  if (filter->word_boundary_info) {
+    if (WordAlignLattice(clat, *(filter->trans_model), *(filter->word_boundary_info), 0, &aligned_clat)) {
+      clat = aligned_clat;
+    }
+  }
+  
+	TopSortCompactLatticeIfNeeded(&aligned_clat);
+
+	std::vector<int32> words, times, lengths;
+	BaseFloat frame_shift = 0.03;
+
+	bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
+	ctm.clear();
+	for (size_t i = 0; i < words.size(); i++) {
+		if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
+			continue;
+		
+		lat_ctm ctm_entry;
+		ctm_entry.start = frame_shift * times[i]; 
+		ctm_entry.dur = frame_shift * lengths[i];
+		ctm_entry.word  = filter->word_syms->Find(words[i]);
+		ctm.push_back(ctm_entry);
+		std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
+	}
+
+	return ok;
+}
+
+
+/**
+* @author:    
+* @modifier:  chunlei, yufei, tlvu 
+* @date:      Nov 19, 2021
+* @describe:  Threaded decoding the audio segment, with both master ASR
+*             and hotword ASR
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onlinedecoder * filter,
                                                       bool &more_data,
                                                       int32 chunk_length,
@@ -1568,15 +1658,15 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
                          hwdecoder.NumFramesDecoded(),
                          hwdecoder.NumWaveformPiecesPending());
 
-	// @tlvu Nov 18, 2021
+        // @tlvu Nov 18, 2021
         if ((decoder.NumFramesDecoded() > 0)
             && decoder.EndpointDetected(*(filter->endpoint_config)) 
-	    && (hwdecoder.NumFramesDecoded() > 0) 
-	    && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
+            && (hwdecoder.NumFramesDecoded() > 0) 
+            && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
           decoder.TerminateDecoding();
-	  hwdecoder.TerminateDecoding();
+          hwdecoder.TerminateDecoding();
           GST_DEBUG_OBJECT(filter, "Endpoint detected!");
-	  GST_INFO_OBJECT(filter, "[HwDecoder] Endpoint detected!");
+          GST_INFO_OBJECT(filter, "[HwDecoder] Endpoint detected!");
           break; 
         }
       }
@@ -1585,14 +1675,28 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
       // @tlvu Nov 18, 2021
       if ((num_seconds_decoded - last_traceback > traceback_period_secs)
           && (decoder.NumFramesDecoded() > 0)
-	  && (hwdecoder.NumFramesDecoded() > 0)) {
+          && (hwdecoder.NumFramesDecoded() > 0)) {
         Lattice lat;
         decoder.GetBestPath(false, &lat, NULL);
         gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
         
         Lattice hwlat;
-	hwdecoder.GetBestPath(false, &hwlat, NULL);
+        hwdecoder.GetBestPath(false, &hwlat, NULL);
         gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
+
+        /**
+        // @tlvu Nov 18, 2021 --- Get the lattice of the master ASR
+        CompactLattice clat;
+        decoder.GetLattice(false, &clat, NULL);
+        std::vector<lat_ctm> master_ctm; 
+        bool ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, clat, master_ctm, false);
+       
+        // @tlvu Nov 18, 2021 --- Get the lattice of the hotword ASR
+        CompactLattice hw_clat;
+        hwdecoder.GetLattice(false, &hw_clat, NULL);
+        std::vector<lat_ctm> hotword_ctm; 
+        bool hot_ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, hw_clat, hotword_ctm, true);
+        **/
 
         last_traceback += traceback_period_secs;
       }
@@ -1625,6 +1729,16 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
       CompactLattice hw_clat;
       hwdecoder.GetLattice(end_of_utterance, &hw_clat, NULL);
       
+      /**
+      // @tlvu Nov 18, 2021 --- Get the lattice of the master ASR
+      std::vector<lat_ctm> master_ctm; 
+      bool ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, clat, master_ctm, false);
+     
+      // @tlvu Nov 18, 2021 --- Get the lattice of the hotword ASR
+      std::vector<lat_ctm> hotword_ctm; 
+      bool hot_ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, hw_clat, hotword_ctm, true);
+      **/
+              
       GST_DEBUG_OBJECT(filter, "Lattice done");
       if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
         GST_DEBUG_OBJECT(filter, "Rescoring lattice with a big LM");
@@ -1719,9 +1833,9 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
     if (filter->do_endpointing
         && (decoder.NumFramesDecoded() > 0)
         && decoder.EndpointDetected(*(filter->endpoint_config))
-	// @tlvu Nov 18, 2021
-	&& (hwdecoder.NumFramesDecoded() > 0) 
-	&& hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
+        // @tlvu Nov 18, 2021
+        && (hwdecoder.NumFramesDecoded() > 0) 
+        && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
       GST_DEBUG_OBJECT(filter, "Endpoint detected!");
       break;
     }
