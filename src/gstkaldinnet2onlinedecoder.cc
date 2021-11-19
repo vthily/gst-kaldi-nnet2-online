@@ -1761,7 +1761,7 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
 
       // @tlvu Nov 18, 2021
       guint num_hwords = 0;
-      gst_kaldinnet2onlinedecoder_final_result(filter, hw_clat, &num_hwords);
+      gst_kaldinnet2onlinedecoder_final_result(filter, hw_clat, &num_hwords, true);
       if (num_hwords >= filter->min_words_for_ivector) {
         // Only update adaptation state if the utterance contained enough words
         hwdecoder.GetAdaptationState(filter->adaptation_state);
