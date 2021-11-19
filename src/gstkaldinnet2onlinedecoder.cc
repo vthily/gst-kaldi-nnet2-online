@@ -1525,38 +1525,38 @@ static bool gst_kaldinnet2onlinedecoder_rescore_big_lm(
 static bool gst_kaldinnet2onlinedecoder_compute_ctm(Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, std::vector<lat_ctm>& ctm, bool is_hotword = false ) {
 
   if (is_hotword) {
-	  gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
-	} else {
-	  gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
-	}
+          gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
+        } else {
+          gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
+        }
 
-	CompactLattice aligned_clat;
+        CompactLattice aligned_clat;
   if (filter->word_boundary_info) {
     if (WordAlignLattice(clat, *(filter->trans_model), *(filter->word_boundary_info), 0, &aligned_clat)) {
       clat = aligned_clat;
     }
   }
   
-	TopSortCompactLatticeIfNeeded(&aligned_clat);
+        TopSortCompactLatticeIfNeeded(&aligned_clat);
 
-	std::vector<int32> words, times, lengths;
-	BaseFloat frame_shift = 0.03;
+        std::vector<int32> words, times, lengths;
+        BaseFloat frame_shift = 0.03;
 
-	bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
-	ctm.clear();
-	for (size_t i = 0; i < words.size(); i++) {
-		if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
-			continue;
-		
-		lat_ctm ctm_entry;
-		ctm_entry.start = frame_shift * times[i]; 
-		ctm_entry.dur = frame_shift * lengths[i];
-		ctm_entry.word  = filter->word_syms->Find(words[i]);
-		ctm.push_back(ctm_entry);
-		std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
-	}
+        bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
+        ctm.clear();
+        for (size_t i = 0; i < words.size(); i++) {
+                if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
+                        continue;
+                
+                lat_ctm ctm_entry;
+                ctm_entry.start = frame_shift * times[i]; 
+                ctm_entry.dur = frame_shift * lengths[i];
+                ctm_entry.word  = filter->word_syms->Find(words[i]);
+                ctm.push_back(ctm_entry);
+                std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
+        }
 
-	return ok;
+        return ok;
 }
 
 
@@ -1772,6 +1772,14 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
 
 }
 
+/**
+* @author:    
+* @modifier:  chunlei, yufei, tlvu 
+* @date:      Nov 19, 2021
+* @describe:  Unthread NNET2 decoding the audio segment, with both master ASR
+*             and hotword ASR
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2onlinedecoder * filter,
                                                         bool &more_data,
                                                         int32 chunk_length,
@@ -1887,7 +1895,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
 
     // @tlvu Nov 18, 2021
     guint num_hwords = 0;
-    gst_kaldinnet2onlinedecoder_final_result(filter, hwlat, &num_hwords);
+    gst_kaldinnet2onlinedecoder_final_result(filter, hwlat, &num_hwords, true);
 
     if ((num_words >= filter->min_words_for_ivector) && (num_hwords >= filter->min_words_for_ivector)) {
       // Only update adaptation state if the utterance contained enough words
@@ -1899,7 +1907,15 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
   }
 }
 
-// for nnet3, we keep this duplication to allow nnet3 specific changes
+/**
+* @author:    
+* @modifier:  chunlei, yufei, tlvu 
+* @date:      Nov 19, 2021
+* @describe:  Unthread NNET3 decoding the audio segment, with both master ASR
+*             and hotword ASR
+*             // for nnet3, we keep this duplication to allow nnet3 specific changes
+*
+**/ 
 static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldinnet2onlinedecoder * filter,
                                                         bool &more_data,
                                                         int32 chunk_length,
@@ -1914,6 +1930,13 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                       *(filter->decode_fst),
                                       &feature_pipeline);
   
+  // @tlvu Nov 19, 2021                                  
+  SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
+                                      *(filter->trans_model), 
+                                      *(filter->decodable_info_nnet3),
+                                      *(filter->decode_hfst),
+                                      &feature_pipeline);
+
   Vector<BaseFloat> wave_part = Vector<BaseFloat>(chunk_length);
   GST_DEBUG_OBJECT(filter, "Reading audio in %d sample chunks...",
                 wave_part.Dim());
@@ -1925,6 +1948,9 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
 
   while (more_data) {
     decoder.InitDecoding(frame_offset);
+    // @tlvu Nov 19, 2021
+    hwdecoder.InitDecoding(frame_offset);
+    
     OnlineSilenceWeighting silence_weighting(*(filter->trans_model),
           *(filter->silence_weighting_config), 
           frame_subsampling_factor);
@@ -1945,6 +1971,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       if (silence_weighting.Active() && 
           feature_pipeline.IvectorFeature() != NULL) {
         silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
+        // @tlvu Nov 19, 2021
+        silence_weighting.ComputeCurrentTraceback(hwdecoder.Decoder());
         silence_weighting.GetDeltaWeights(feature_pipeline.NumFramesReady(), 
                                           frame_offset * frame_subsampling_factor,
                                           &delta_weights);
@@ -1953,6 +1981,10 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
 
       decoder.AdvanceDecoding();
       GST_DEBUG_OBJECT(filter, "%d frames decoded", decoder.NumFramesDecoded());
+      // @tlvu Nov 19, 2021
+      hwdecoder.AdvanceDecoding();
+      GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder.NumFramesDecoded());
+      
       num_seconds_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
       filter->total_time_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
       GST_DEBUG_OBJECT(filter, "Total amount of audio processed: %f seconds", filter->total_time_decoded);
@@ -1961,16 +1993,24 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       }
       if (filter->do_endpointing
           && (decoder.NumFramesDecoded() > 0)
-          && decoder.EndpointDetected(*(filter->endpoint_config))) {
+          && decoder.EndpointDetected(*(filter->endpoint_config))
+          && (hwdecoder.NumFramesDecoded() > 0)
+          && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
         GST_DEBUG_OBJECT(filter, "Endpoint detected!");
         break;
       }
 
       if ((num_seconds_decoded - last_traceback > traceback_period_secs)
-          && (decoder.NumFramesDecoded() > 0)) {
+          && (decoder.NumFramesDecoded() > 0)
+          && (hwdecoder.NumFramesDecoded() > 0)) {
         Lattice lat;
         decoder.GetBestPath(false, &lat);
         gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+        
+        // @tlvu Nov 19, 2021
+        Lattice hwlat;
+        hwdecoder.GetBestPath(false, &hwlat);
+        gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
         last_traceback += traceback_period_secs;
       }
     }
@@ -1978,22 +2018,43 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     if (num_seconds_decoded > 0.1) {
       GST_DEBUG_OBJECT(filter, "Getting lattice..");
       decoder.FinalizeDecoding();
+      // @tlvu Nov 19, 2021
+      hwdecoder.FinalizeDecoding();
       frame_offset += decoder.NumFramesDecoded();
+      
       CompactLattice clat;
       bool end_of_utterance = true;
       decoder.GetLattice(end_of_utterance, &clat);
+      
+      // @tlvu Nov 19, 2021
+      CompactLattice hw_lat;
+      hwdecoder.GetLattice(end_of_utterance, &hw_lat);
+      
       GST_DEBUG_OBJECT(filter, "Lattice done");
       if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
         GST_DEBUG_OBJECT(filter, "Rescoring lattice with a big LM");
+        
         CompactLattice rescored_lat;
         if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, clat, rescored_lat)) {
           clat = rescored_lat;
+        }
+        
+        // @tlvu Nov 19, 2021
+        CompactLattice rescored_hwlat;
+        if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hw_lat, rescored_hwlat)) {
+          hw_lat = rescored_hwlat;
         }
       }
 
       guint num_words = 0;
       gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
-      if (num_words >= filter->min_words_for_ivector) {
+      
+      // @tlvu Nov 19, 2021
+      guint num_hwords = 0;
+      gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
+      
+      if ((num_words >= filter->min_words_for_ivector) 
+          && (num_hwords >= filter->min_words_for_ivector)) {
         // Only update adaptation state if the utterance contained enough words
         feature_pipeline.GetAdaptationState(filter->adaptation_state);
         feature_pipeline.GetCmvnState(filter->cmvn_state);
