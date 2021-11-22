@@ -17,7 +17,7 @@ audio=$1
 
 GST_PLUGIN_PATH=../src gst-launch-1.0 --gst-debug="LIST" --gst-debug-level=2 -q filesrc location=$audio ! decodebin ! audioconvert ! audioresample ! \
 kaldinnet2onlinedecoder \
-  use-threaded-decoder=false \
+  use-threaded-decoder=true \
   model=models/final.mdl \
   fst=models/HCLG.fst \
   word-syms=models/words.txt \

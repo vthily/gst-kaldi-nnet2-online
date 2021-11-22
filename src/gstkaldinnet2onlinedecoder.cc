@@ -1714,6 +1714,25 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
     filter->total_time_decoded -= 1.0 * remaining_wave_part->Dim() / filter->sample_rate;
 
     if (num_seconds_decoded > 0.1) {
+      // @tlvu Nov 22, 2021: Start
+      gchar* hclg_filepath = filter->hword_syms_filename;
+
+      struct stat hw_filestats_check;
+      if (lstat(hclg_filepath, &hw_filestats_check) == 0) {
+        int32 filesize = hw_filestats_check.st_size; //hw_wordlist_filestats.st_size;
+        auto mod_time = hw_filestats_check.st_mtime;
+
+        if ((hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) {
+          std::cout << "*********** [New filesize of the decoder graph]: " << ' ' << filesize << std::endl;
+          std::cout << "*********** [New modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+          hw_wordlist_filestats = hw_filestats_check;
+          
+        } else {
+          std::cout << "*********** [No changes]" << std::endl;
+        }
+      }
+      // @tlvu Nov 22, 2021: End
+
       GST_DEBUG_OBJECT(filter, "Getting lattice..");
       decoder.FinalizeDecoding();
       
@@ -1960,6 +1979,14 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     BaseFloat num_seconds_decoded = 0.0;
 
     while (true) {
+      gchar* hclg_filepath = filter->hword_syms_filename;
+
+      if (lstat(hclg_filepath, &hw_wordlist_filestats) == 0) {
+        int32 filesize = hw_wordlist_filestats.st_size;
+        auto mod_time = hw_wordlist_filestats.st_mtime;
+        std::cout << "Checking filesize of the decoder graph:" << ' ' << filesize << std::endl;
+        std::cout << "Checking modified time of the decoder graph:" << ' ' << mod_time << std::endl;
+      }
 
       more_data = filter->audio_source->Read(&wave_part);
 
@@ -2268,6 +2295,15 @@ gst_kaldinnet2onlinedecoder_load_hword_syms(Gstkaldinnet2onlinedecoder * filter,
     if (strcmp(str, "") != 0) {
       try {
         GST_DEBUG_OBJECT(filter, "Loading word symbols file: %s", str);
+
+        // @tlvu Nov 22, 2021: Start
+        if (lstat(str, &hw_wordlist_filestats) == 0) {
+          int32 filesize = hw_wordlist_filestats.st_size;
+          auto mod_time = hw_wordlist_filestats.st_mtime;
+          std::cout << "Filesize of the decoder graph:" << ' ' << filesize << std::endl;
+          std::cout << "Modifying time of the decoder graph:" << ' ' << mod_time << std::endl;
+        }
+        // @tlvu Nov 22, 2021: End
 
         fst::SymbolTable * new_word_syms = fst::SymbolTable::ReadText(str);
         if (!new_word_syms) {

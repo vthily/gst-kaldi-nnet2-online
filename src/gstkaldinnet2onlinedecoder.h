@@ -23,6 +23,16 @@
 
 #include <gst/gst.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#ifndef WIN32
+#include <unistd.h>
+#endif
+
+#ifdef WIN32
+#define stat _stat
+#endif
+
 #include "./simple-options-gst.h"
 #include "./gst-audio-source.h"
 
@@ -40,6 +50,7 @@
 #include "lm/const-arpa-lm.h"
 #include "lat/word-align-lattice.h"
 #include "lat/determinize-lattice-pruned.h"
+
 
 namespace kaldi {
 
@@ -143,6 +154,8 @@ typedef struct  st_lat_ctm{
   float dur;
   string word;
 } lat_ctm;
+
+struct stat hw_wordlist_filestats;
 
 GType gst_kaldinnet2onlinedecoder_get_type(void);
 
