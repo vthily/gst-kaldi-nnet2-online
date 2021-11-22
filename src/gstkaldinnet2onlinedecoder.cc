@@ -1726,7 +1726,7 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
           std::cout << "*********** [New filesize of the decoder graph]: " << ' ' << filesize << std::endl;
           std::cout << "*********** [New modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
           hw_wordlist_filestats = hw_filestats_check;
-          
+
         } else {
           std::cout << "*********** [No changes]" << std::endl;
         }
@@ -1979,15 +1979,6 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     BaseFloat num_seconds_decoded = 0.0;
 
     while (true) {
-      gchar* hclg_filepath = filter->hword_syms_filename;
-
-      if (lstat(hclg_filepath, &hw_wordlist_filestats) == 0) {
-        int32 filesize = hw_wordlist_filestats.st_size;
-        auto mod_time = hw_wordlist_filestats.st_mtime;
-        std::cout << "Checking filesize of the decoder graph:" << ' ' << filesize << std::endl;
-        std::cout << "Checking modified time of the decoder graph:" << ' ' << mod_time << std::endl;
-      }
-
       more_data = filter->audio_source->Read(&wave_part);
 
       feature_pipeline.AcceptWaveform(filter->sample_rate, wave_part);
