@@ -60,6 +60,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <string>
 
 #include <jansson.h>
 
@@ -1377,7 +1378,11 @@ static void gst_kaldinnet2onlinedecoder_final_result(
     return;
   }
 
-  gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
+  if (is_hotword) {
+    gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
+  } else {
+    gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
+  }
 
   FullFinalResult full_final_result;
   GST_DEBUG_OBJECT(filter, "Decoding n-best results");
@@ -1393,12 +1398,15 @@ static void gst_kaldinnet2onlinedecoder_final_result(
     // @tlvu Nov 19, 2021
     if (is_hotword) {
       // GST_INFO_OBJECT(filter, "Final (Hotword): %s", best_transcript.c_str());
-      std::cout << "Final (Hotword):" << ' ' << best_transcript << std::endl;
+      std::cout << "Final (Hotword):" << ' ' << " ↓ " << std::endl;
     } else {
       // GST_INFO_OBJECT(filter, "Final (Master): %s", best_transcript.c_str());
-      std::cout << "Final (Master):" << ' ' << best_transcript << std::endl;
+      std::cout << "Final (Master):" << ' ' << " ↓ " << std::endl;
     }
-    
+    // std::wstring s(L"↓");
+    // std::wcout << s << "\n";
+    // std::cout << " ↓ " << std::endl;
+
     guint hyp_length = best_transcript.length();
     *num_words = full_final_result.nbest_results[0].words.size();
 
@@ -1417,6 +1425,8 @@ static void gst_kaldinnet2onlinedecoder_final_result(
       g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
 
     }
+    std::cout << "---" << ' ' << std::endl;
+
   }
 }
 
@@ -1525,38 +1535,38 @@ static bool gst_kaldinnet2onlinedecoder_rescore_big_lm(
 static bool gst_kaldinnet2onlinedecoder_compute_ctm(Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, std::vector<lat_ctm>& ctm, bool is_hotword = false ) {
 
   if (is_hotword) {
-          gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
-        } else {
-          gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
-        }
+    gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
+  } else {
+    gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
+  }
 
-        CompactLattice aligned_clat;
+  CompactLattice aligned_clat;
   if (filter->word_boundary_info) {
     if (WordAlignLattice(clat, *(filter->trans_model), *(filter->word_boundary_info), 0, &aligned_clat)) {
       clat = aligned_clat;
     }
   }
   
-        TopSortCompactLatticeIfNeeded(&aligned_clat);
+  TopSortCompactLatticeIfNeeded(&aligned_clat);
 
-        std::vector<int32> words, times, lengths;
-        BaseFloat frame_shift = 0.03;
+  std::vector<int32> words, times, lengths;
+  BaseFloat frame_shift = 0.03;
 
-        bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
-        ctm.clear();
-        for (size_t i = 0; i < words.size(); i++) {
-                if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
-                        continue;
-                
-                lat_ctm ctm_entry;
-                ctm_entry.start = frame_shift * times[i]; 
-                ctm_entry.dur = frame_shift * lengths[i];
-                ctm_entry.word  = filter->word_syms->Find(words[i]);
-                ctm.push_back(ctm_entry);
-                std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
-        }
+  bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
+  ctm.clear();
+  for (size_t i = 0; i < words.size(); i++) {
+          if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
+                  continue;
+          
+          lat_ctm ctm_entry;
+          ctm_entry.start = frame_shift * times[i]; 
+          ctm_entry.dur = frame_shift * lengths[i];
+          ctm_entry.word  = filter->word_syms->Find(words[i]);
+          ctm.push_back(ctm_entry);
+          std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
+  }
 
-        return ok;
+  return ok;
 }
 
 
