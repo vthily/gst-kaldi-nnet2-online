@@ -23,8 +23,6 @@ GST_PLUGIN_PATH=../src gst-launch-1.0 --gst-debug="LIST" --gst-debug-level=2 -q 
 kaldinnet2onlinedecoder \
   use-threaded-decoder=false \
   nnet-mode=3 \
-  phone-syms=masterModel_juneASR/phones.txt \
-  word-boundary-file=masterModel_juneASR/word_boundary.int \
   num-nbest=3 \
   num-phone-alignment=3 \
   do-phone-alignment=true \
@@ -45,7 +43,9 @@ kaldinnet2onlinedecoder \
   model=masterModel_juneASR/final.mdl \
   fst=masterModel_juneASR/HCLG.fst \
   word-syms=masterModel_juneASR/words.txt \
-  hfst=masterModel_juneASR/HCLG.fst  \
-  hword-syms=masterModel_juneASR/words.txt \
+  hfst=hwGraph_personNames/graph/HCLG.fst  \
+  hword-syms=hwGraph_personNames/graph/words.txt \
+  phone-syms=masterModel_juneASR/phones.txt \
+  word-boundary-file=masterModel_juneASR/word_boundary.int \
 ! filesink location=/dev/stdout buffer-mode=2
 
