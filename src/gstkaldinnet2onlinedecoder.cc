@@ -120,7 +120,7 @@ enum {
 #define DEFAULT_HWORD_SYMS      "" // @tlvu
 #define DEFAULT_PHONE_SYMS      ""
 #define DEFAULT_WORD_BOUNDARY_FILE ""
-#define DEFAULT_LMWT_SCALE        1.0
+#define DEFAULT_LMWT_SCALE      1.0
 #define DEFAULT_HLMWT_SCALE     21.0 // @tlvu Nov 18, 2021
 #define DEFAULT_CHUNK_LENGTH_IN_SECS  0.05
 #define DEFAULT_TRACEBACK_PERIOD_IN_SECS  0.5
@@ -1177,10 +1177,15 @@ static void gst_kaldinnet2onlinedecoder_scale_hwlattice(
 }
 
 static std::string gst_kaldinnet2onlinedecoder_words_to_string(
-    Gstkaldinnet2onlinedecoder *filter, const std::vector<int32> &words) {
+    Gstkaldinnet2onlinedecoder *filter, const std::vector<int32> &words, bool is_hotword=false) {
   std::stringstream sentence;
   for (size_t i = 0; i < words.size(); i++) {
     std::string s = filter->word_syms->Find(words[i]);
+    // @tlvu Nov 22, 2021
+    if (is_hotword) {
+      s = filter->hword_syms->Find(words[i]);
+    }
+
     if (s == "")
       GST_ERROR_OBJECT(filter, "Word-id %d not in symbol table.", words[i]);
     if (i > 0) {
@@ -1190,6 +1195,7 @@ static std::string gst_kaldinnet2onlinedecoder_words_to_string(
   }
   return sentence.str();
 }
+
 
 /**
 * @author:    
@@ -1214,13 +1220,20 @@ static std::string gst_kaldinnet2onlinedecoder_hwords_to_string(
 }
 
 
+/**
+* @author:    
+* @modifier:  tlvu 
+* @date:      Nov 22, 2021
+* @describe:  Consider incase using hotword graph
+*
+**/ 
 static std::string gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(
-    Gstkaldinnet2onlinedecoder *filter, const std::vector<WordInHypothesis> &words) {
+    Gstkaldinnet2onlinedecoder *filter, const std::vector<WordInHypothesis> &words, bool is_hotword=false) {
   std::vector<int32> word_ids;
   for (size_t i = 0; i < words.size(); i++) {
     word_ids.push_back(words[i].word_id);
   }
-  return gst_kaldinnet2onlinedecoder_words_to_string(filter, word_ids);
+  return gst_kaldinnet2onlinedecoder_words_to_string(filter, word_ids, is_hotword);
 }
 
 static std::vector<NBestResult> gst_kaldinnet2onlinedecoder_nbest_results(
@@ -1276,9 +1289,10 @@ static std::vector<NBestResult> gst_kaldinnet2onlinedecoder_nbest_results(
   return nbest_results;
 }
 
+// @tlvu Nov 22, 2021: Adding parameter
 static std::string gst_kaldinnet2onlinedecoder_full_final_result_to_json(
     Gstkaldinnet2onlinedecoder * filter,
-    const FullFinalResult &full_final_result) {
+    const FullFinalResult &full_final_result, bool is_hotword=false) {
 
   json_t *root = json_object();
   json_t *result_json_object = json_object();
@@ -1303,7 +1317,7 @@ static std::string gst_kaldinnet2onlinedecoder_full_final_result_to_json(
       NBestResult nbest_result = *it;
       json_t *nbest_result_json_object = json_object();
       json_object_set_new(nbest_result_json_object, "transcript",
-                          json_string(gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, nbest_result.words).c_str()));
+                          json_string(gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, nbest_result.words, is_hotword).c_str()));
       json_object_set_new(nbest_result_json_object, "likelihood",  json_real(nbest_result.likelihood));
       json_array_append( nbest_json_arr, nbest_result_json_object );
       if (nbest_result.phone_alignment.size() > 0) {
@@ -1389,7 +1403,8 @@ static void gst_kaldinnet2onlinedecoder_final_result(
   full_final_result.nbest_results = gst_kaldinnet2onlinedecoder_nbest_results(filter, clat);
 
   if (full_final_result.nbest_results.size() > 0) {
-    std::string best_transcript = gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, full_final_result.nbest_results[0].words);
+    // @tlvu Nov 22, 2021
+    std::string best_transcript = gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, full_final_result.nbest_results[0].words, is_hotword);
 
     GST_DEBUG_OBJECT(filter, "Likelihood per frame is %f over %d frames",
         full_final_result.nbest_results[0].likelihood/full_final_result.nbest_results[0].num_frames , full_final_result.nbest_results[0].num_frames);
@@ -1403,9 +1418,6 @@ static void gst_kaldinnet2onlinedecoder_final_result(
       // GST_INFO_OBJECT(filter, "Final (Master): %s", best_transcript.c_str());
       std::cout << "Final (Master):" << ' ' << " ↓ " << std::endl;
     }
-    // std::wstring s(L"↓");
-    // std::wcout << s << "\n";
-    // std::cout << " ↓ " << std::endl;
 
     guint hyp_length = best_transcript.length();
     *num_words = full_final_result.nbest_results[0].words.size();
@@ -1419,8 +1431,9 @@ static void gst_kaldinnet2onlinedecoder_final_result(
       /* Emit a signal for applications. */
       g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
 
+      // @tlvu Nov 22, 2021: Adding parameter
       std::string full_final_result_as_json =
-          gst_kaldinnet2onlinedecoder_full_final_result_to_json(filter, full_final_result);
+          gst_kaldinnet2onlinedecoder_full_final_result_to_json(filter, full_final_result, is_hotword);
       GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
       g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
 
@@ -1903,7 +1916,7 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
 
     // @tlvu Nov 18, 2021
     CompactLattice hwlat;
-    decoder.GetLattice(end_of_utterance, &hwlat);
+    hwdecoder.GetLattice(end_of_utterance, &hwlat);
 
     GST_DEBUG_OBJECT(filter, "Lattice done");
     if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
