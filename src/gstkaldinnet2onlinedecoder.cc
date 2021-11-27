@@ -2226,8 +2226,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                       *(filter->decodable_info_nnet3),
                                       *(filter->decode_fst),
                                       &feature_pipeline);
-  
-SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
+
+	SingleUtteranceNnet3Decoder *hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
 									  *(filter->trans_model), 
 									  *(filter->decodable_info_nnet3),
 									  *(filter->decode_hfst),
@@ -2249,62 +2249,70 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
 
   
   // @victor Nov 25, 2021: Start
-  gchar* hw_wordlist_filepath = filter->hword_syms_filename;
+  //gchar* hw_wordlist_filepath = filter->hword_syms_filename;
 
   struct stat hw_filestats_check;
-  if (lstat(hw_wordlist_filepath, &hw_filestats_check) == 0 || true) {
+  if (lstat(filter->hword_syms_filename, &hw_filestats_check) == 0) {
 	int32 filesize = hw_filestats_check.st_size; //hw_wordlist_filestats.st_size;
 	auto mod_time = hw_filestats_check.st_mtime;
   
-	if (true || (hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) {
+	if ((hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) {
 	  std::cout << "*********** [New filesize of the decoder graph]: " << ' ' << filesize << std::endl;
 	  std::cout << "*********** [New modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
 
 
 	  hw_wordlist_filestats = hw_filestats_check;
-        //if (filter->decode_hfst) {
-        //  delete filter->decode_hfst;
-        //}
-		std::cout<<"begin load hclg";
-	  fst::Fst<fst::StdArc> * new_decode_fst = fst::ReadFstKaldiGeneric( filter->hfst_rspecifier);
-	  		std::cout<<"done load hclg";
-	  filter->decode_hfst = new_decode_fst;
+        if (filter->decode_hfst) {
+          //delete (*filter).decode_hfst;
+		  delete filter->decode_hfst;
+
+        }
+	  fst::Fst<fst::StdArc> *new_decode_fst = fst::ReadFstKaldiGeneric(filter->hfst_rspecifier);
+	  (*filter).decode_hfst = new_decode_fst;
 
 
+		//delete new_decode_fst;
 	  // Delete old objects if needed
 	  if (filter->hword_syms) {
+	    //delete (*filter).hword_syms;
 		delete filter->hword_syms;
-	  }
+	 }
 
-      fst::SymbolTable * new_word_syms = fst::SymbolTable::ReadText(filter->hword_syms_filename);
+      fst::SymbolTable *new_word_syms = NULL;
+
+
+	  new_word_syms=fst::SymbolTable::ReadText(filter->hword_syms_filename);
+
+
 	  // Replace the symbol table
 	  filter->hword_syms = new_word_syms;
 
-			  
-  		SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
+		delete hwdecoder_p;  
+		hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
                                       *(filter->trans_model), 
                                       *(filter->decodable_info_nnet3),
                                       *(filter->decode_hfst),
                                       &feature_pipeline);
+
+
 	} else {
 	  std::cout << "*********** [No changes]" << std::endl;
 	}
   }
-   g_free(hw_wordlist_filepath);
+
   // @victorNov 25, 2021: End
 
 
 
+	
 
 
 
 
-
-  
     decoder.InitDecoding(frame_offset);
+
     // @tlvu Nov 19, 2021
-    hwdecoder.InitDecoding(frame_offset);
-    
+    hwdecoder_p->InitDecoding(frame_offset);
     OnlineSilenceWeighting silence_weighting(*(filter->trans_model),
           *(filter->silence_weighting_config), 
           frame_subsampling_factor);
@@ -2325,7 +2333,7 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
           feature_pipeline.IvectorFeature() != NULL) {
         silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
         // @tlvu Nov 19, 2021
-        silence_weighting.ComputeCurrentTraceback(hwdecoder.Decoder());
+        silence_weighting.ComputeCurrentTraceback(hwdecoder_p->Decoder());
         silence_weighting.GetDeltaWeights(feature_pipeline.NumFramesReady(), 
                                           frame_offset * frame_subsampling_factor,
                                           &delta_weights);
@@ -2335,8 +2343,8 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
       decoder.AdvanceDecoding();
       GST_DEBUG_OBJECT(filter, "%d frames decoded", decoder.NumFramesDecoded());
       // @tlvu Nov 19, 2021
-      hwdecoder.AdvanceDecoding();
-      GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder.NumFramesDecoded());
+      hwdecoder_p->AdvanceDecoding();
+      GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder_p->NumFramesDecoded());
       
       num_seconds_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
       filter->total_time_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
@@ -2347,8 +2355,8 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
       if (filter->do_endpointing
           && (decoder.NumFramesDecoded() > 0)
           && decoder.EndpointDetected(*(filter->endpoint_config))
-          && (hwdecoder.NumFramesDecoded() > 0)
-          && hwdecoder.EndpointDetected(*(filter->endpoint_config))) {
+          && (hwdecoder_p->NumFramesDecoded() > 0)
+          && hwdecoder_p->EndpointDetected(*(filter->endpoint_config))) {
         GST_DEBUG_OBJECT(filter, "Endpoint detected!");
         break;
       }
@@ -2356,19 +2364,19 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
 		  
 	  if ((num_seconds_decoded - last_traceback > traceback_period_secs)
 		  && (decoder.NumFramesDecoded() > 0)
-		  && (hwdecoder.NumFramesDecoded() > 0)) {
+		  && (hwdecoder_p->NumFramesDecoded() > 0)) {
 		Lattice lat;
 		decoder.GetBestPath(false, &lat);
 		gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
 		
 		// @tlvu Nov 19, 2021
 		Lattice hwlat;
-		hwdecoder.GetBestPath(false, &hwlat);
+		hwdecoder_p->GetBestPath(false, &hwlat);
 		gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
 		last_traceback += traceback_period_secs;
 
 
-                // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
+                // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
 
 
 
@@ -2380,7 +2388,7 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
       GST_DEBUG_OBJECT(filter, "Getting lattice..");
       decoder.FinalizeDecoding();
       // @tlvu Nov 19, 2021
-      hwdecoder.FinalizeDecoding();
+      hwdecoder_p->FinalizeDecoding();
       frame_offset += decoder.NumFramesDecoded();
       
       CompactLattice clat;
@@ -2389,7 +2397,7 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
       
       // @tlvu Nov 19, 2021
       CompactLattice hw_lat;
-      hwdecoder.GetLattice(end_of_utterance, &hw_lat);
+      hwdecoder_p->GetLattice(end_of_utterance, &hw_lat);
       
       GST_DEBUG_OBJECT(filter, "Lattice done");
       if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
@@ -2421,6 +2429,62 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
         feature_pipeline.GetAdaptationState(filter->adaptation_state);
         feature_pipeline.GetCmvnState(filter->cmvn_state);
       }
+	  
+	  
+  // @victor Nov 25, 2021: Start
+  //gchar* hw_wordlist_filepath = filter->hword_syms_filename;
+
+  struct stat hw_filestats_check;
+  if (lstat(filter->hword_syms_filename, &hw_filestats_check) == 0) {
+	int32 filesize = hw_filestats_check.st_size; //hw_wordlist_filestats.st_size;
+	auto mod_time = hw_filestats_check.st_mtime;
+  
+	if ((hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) {
+	  std::cout << "*********** [New filesize of the decoder graph]: " << ' ' << filesize << std::endl;
+	  std::cout << "*********** [New modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+
+
+	  hw_wordlist_filestats = hw_filestats_check;
+        if (filter->decode_hfst) {
+          //delete (*filter).decode_hfst;
+		  delete filter->decode_hfst;
+
+        }
+	  fst::Fst<fst::StdArc> *new_decode_fst = fst::ReadFstKaldiGeneric(filter->hfst_rspecifier);
+	  (*filter).decode_hfst = new_decode_fst;
+
+
+		//delete new_decode_fst;
+	  // Delete old objects if needed
+	  if (filter->hword_syms) {
+	    //delete (*filter).hword_syms;
+		delete filter->hword_syms;
+	 }
+
+      fst::SymbolTable *new_word_syms = NULL;
+
+
+	  new_word_syms=fst::SymbolTable::ReadText(filter->hword_syms_filename);
+
+
+	  // Replace the symbol table
+	  filter->hword_syms = new_word_syms;
+
+		delete hwdecoder_p;  
+		hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
+                                      *(filter->trans_model), 
+                                      *(filter->decodable_info_nnet3),
+                                      *(filter->decode_hfst),
+                                      &feature_pipeline);
+
+
+	} else {
+	  std::cout << "*********** [No changes]" << std::endl;
+	}
+  }
+
+  // @victorNov 25, 2021: End
+	  
     } else {
       GST_DEBUG_OBJECT(filter, "Less than 0.1 seconds decoded, discarding");
     }
