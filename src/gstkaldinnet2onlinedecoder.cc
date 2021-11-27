@@ -1075,7 +1075,7 @@ static void gst_kaldinnet2onlinedecoder_get_property(GObject * object,
       break;
     // @tlvu Nov 17, 2021
     case PROP_HFST:
-      g_value_set_string(value, filter->fst_rspecifier);
+      g_value_set_string(value, filter->hfst_rspecifier);
       break;      
     case PROP_WORD_SYMS:
       g_value_set_string(value, filter->word_syms_filename);
@@ -1624,6 +1624,7 @@ static void gst_kaldinnet2onlinedecoder_final_result(
         full_final_result.nbest_results[0].likelihood/full_final_result.nbest_results[0].num_frames , full_final_result.nbest_results[0].num_frames);
     GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
     
+    /*
     // @tlvu Nov 19, 2021
     if (is_hotword) {
       // GST_INFO_OBJECT(filter, "Final (Hotword): %s", best_transcript.c_str());
@@ -1631,7 +1632,7 @@ static void gst_kaldinnet2onlinedecoder_final_result(
     } else {
       // GST_INFO_OBJECT(filter, "Final (Master): %s", best_transcript.c_str());
       std::cout << "Final (Master):" << ' ' << " ↓ " << std::endl;
-    }
+    }*/
 
     guint hyp_length = best_transcript.length();
     *num_words = full_final_result.nbest_results[0].words.size();
@@ -1652,7 +1653,9 @@ static void gst_kaldinnet2onlinedecoder_final_result(
       g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
 
     }
+    /*
     std::cout << "---" << ' ' << std::endl;
+    */
 
   }
 }
@@ -2317,7 +2320,7 @@ SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
       if (!more_data) {
         feature_pipeline.InputFinished();
       }
-
+      
       if (silence_weighting.Active() && 
           feature_pipeline.IvectorFeature() != NULL) {
         silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
