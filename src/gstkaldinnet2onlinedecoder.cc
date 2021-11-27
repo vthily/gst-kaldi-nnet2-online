@@ -49,7 +49,7 @@
 
 #include "./kaldimarshal.h"
 #include "./gstkaldinnet2onlinedecoder.h"
-
+#include "lat/word-align-lattice.h"
 #include "fstext/fstext-lib.h"
 #include "lat/confidence.h"
 #include "hmm/hmm-utils.h"
@@ -71,6 +71,159 @@
 
 
 namespace kaldi {
+
+bool ComputeCtm(CompactLattice clat, TransitionModel& trans_model, WordBoundaryInfo&info, fst::SymbolTable *word_syms, BaseFloat lmwt, std::vector<lat_ctm>& ctm) {
+
+
+
+
+	//GetDiagnosticsAndPrintOutput(utt +" master: ", word_syms, clat, &num_frames, &tot_like);
+	
+	CompactLattice best_path_clat;
+	BaseFloat acoustic_scale = 1.0;
+	BaseFloat lm_scale = 1.0;
+	BaseFloat word_ins_penalty = 0.0;
+
+	if (lmwt > 0)
+		lm_scale = lmwt;
+	fst::ScaleLattice(fst::LatticeScale(lm_scale, acoustic_scale), &clat);
+	if (word_ins_penalty > 0.0) {
+		AddWordInsPenToCompactLattice(word_ins_penalty, &clat);
+	}
+	CompactLatticeShortestPath(clat, &best_path_clat);
+	if (word_ins_penalty > 0.0) {
+		AddWordInsPenToCompactLattice(-word_ins_penalty, &best_path_clat);
+	}
+	fst::ScaleLattice(fst::LatticeScale(1.0 / lm_scale, 1.0 / acoustic_scale), &best_path_clat);
+
+
+	CompactLattice aligned_clat;
+	bool ok = WordAlignLattice(best_path_clat, trans_model, info, 0, &aligned_clat);
+	TopSortCompactLatticeIfNeeded(&aligned_clat);
+
+	//CompactLattice  align_best_path_clat;
+	//CompactLatticeShortestPath(aligned_clat, & align_best_path_clat);
+
+	std::vector<int32> words, times, lengths;
+	BaseFloat frame_shift = 0.03;
+
+	ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
+	ctm.clear();
+	for (size_t i = 0; i < words.size(); i++) {
+		if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
+			continue;
+		
+		lat_ctm ctm_entry;
+		ctm_entry.start = frame_shift * times[i]; ctm_entry.dur = frame_shift * lengths[i];
+		ctm_entry.word  = word_syms->Find(words[i]);
+		ctm.push_back(ctm_entry);
+		//std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
+	}
+
+	return ok;
+}
+
+/*
+  ***
+  combine resulst from master decoder and hotword decoder. 
+  ***
+*/
+string CombineCtm(std::vector<lat_ctm> & master_ctm, std::vector<lat_ctm>& hot_ctm) {
+	string final_result;
+	std::vector<lat_ctm> hwlist;
+	//step1 extract  only the hotwords  from hotword decoder;
+	for (int i = 0; i < hot_ctm.size(); i++) {
+		if (hot_ctm[i].word.length() > 2 && hot_ctm[i].word[0] == '_' &&  hot_ctm[i].word[1] == '_')
+		{
+			lat_ctm ctm_entry = hot_ctm[i];					
+			std::replace(ctm_entry.word.begin(), ctm_entry.word.end(), '_', ' '); 
+			hwlist.push_back(ctm_entry);
+		}
+	}
+    
+	//step 2 calculating the overlappping rate for each word of master decoder by the hotword list.
+	//
+	int len1 = master_ctm.size(), len2 = hwlist.size();
+	std::vector<lat_ctm> new_master_ctm;
+
+	for (int i = 0; i < len1; i++)
+	{
+		float overlap_dur = 0;
+		bool  bDel = false;
+		for (int j = 0; j < len2; j++)
+		{
+			// case 1 :master_ctm[i] is in front of hwlist[j] and no overlap
+			if (master_ctm[i].start <= hwlist[j].start && master_ctm[i].start + master_ctm[i].dur <= hwlist[j].start){
+				break;  // no need to cal overlap with next hotword as obviously no overlap.
+			}
+			//case 2::master_ctm[i] is in front of hwlist[j] and overlap
+			if (master_ctm[i].start <= hwlist[j].start && master_ctm[i].start + master_ctm[i].dur > hwlist[j].start) {
+				// two cases; master_ctm[i] contains part or whole hwlist[j]
+				// case 2.1 master_ctm[i] contains whole hwlist[j]
+				if (master_ctm[i].start + master_ctm[i].dur >= hwlist[j].start + hwlist[j].dur) {
+					// no need to check with other hotwords, mark this for deletion; whole hotword hwlist[j] inside the master word master_ctm[i]
+					bDel = true;  // mark for delete, no mneed to calculate overlap rate
+					break; 
+				} 
+				else {// 2.2 calcluate overlap duration 
+					overlap_dur += master_ctm[i].start + master_ctm[i].dur - hwlist[j].start;
+					break; // no need to calculate overlap with next hotword as obviously no overlap 
+				}	
+			}
+			// case 4 : master_ctm[i] is behind hwlist[j] and overlap
+			if (master_ctm[i].start > hwlist[j].start  &&  hwlist[j].start + hwlist[j].dur > master_ctm[i].start) {
+				// two cases;hwlist[j] contains part or whole master_ctm[i]
+				// case 4.1 // hotword hwlist[j] contains whole master_ctm[i];
+				if (hwlist[j].start + hwlist[j].dur >= master_ctm[i].start + master_ctm[i].dur) {
+					bDel = true; // delete obviously 
+					break;
+				}else  {  // 4.2 calcluate overlap duration 
+					overlap_dur += hwlist[j].start + hwlist[j].dur -  master_ctm[i].start;
+					continue;  // continue master_ctm[i] with next hwlist[j+1]; 
+				}
+			}
+			// case 6:  master_ctm[i] is behind hwlist[j] and  no overlap
+			if (master_ctm[i].start > hwlist[j].start  &&  hwlist[j].start + hwlist[j].dur <= master_ctm[i].start) {
+				continue;  // continue master_ctm[i] with next hwlist[j+1] for possible overlap; 
+			}
+		}
+
+		if (bDel)
+			continue;   // no need to calculate overlap rate, just omit the master word master_ctm[i];
+		// end:  if no deletion,  calcalate "overall" overlap rate with all the hotwords. 
+		float overlaprate = 0;
+		if (master_ctm[i].dur > 0)  // deal with extrem case 
+			overlaprate = overlap_dur / master_ctm[i].dur;
+
+		if (overlaprate < 0.5)  // only include the master word master_ctm[i] if total overlapping rate is less than 0.5
+			new_master_ctm.push_back(master_ctm[i]);// include this word in the final result		   
+	}
+	//step 3 combine new_master_ctm and hwlist base on its start time into the final results
+	len1 = new_master_ctm.size(); len2 = hwlist.size();
+	int i = 0, j =0;
+	while (i < len1 && j < len2)
+	{
+		if (new_master_ctm[i].start <= hwlist[j].start) {
+			final_result += new_master_ctm[i].word + " ";
+			i++;
+		}
+		else {		
+			final_result += hwlist[j].word + " ";
+			j++;
+		}
+	}	
+	//add remaining master decoder words or hotwords into final result
+	if (i < len1) {
+		for ( int k =i; k<len1; k++)
+			final_result += new_master_ctm[k].word + " ";
+	}
+	else if (j < len2) {
+		for ( int k = j; k<len2; k++)
+			final_result += hwlist[k].word + " ";
+	}
+
+	return final_result;
+}
 
 GST_DEBUG_CATEGORY_STATIC(gst_kaldinnet2onlinedecoder_debug);
 #define GST_CAT_DEFAULT gst_kaldinnet2onlinedecoder_debug
@@ -1376,6 +1529,67 @@ static std::string gst_kaldinnet2onlinedecoder_full_final_result_to_json(
   return result;
 }
 
+
+
+	/**
+	* @author:	  tlvu
+	* @modifier:  
+	* @date:	  Nov 19, 2021
+	* @describe:  Adding debug information to differentiate between Master and Hotword ASR
+	*
+	**/ 
+	static void gst_kaldinnet2onlinedecoder_final_combined_result(
+		Gstkaldinnet2onlinedecoder * filter, CompactLattice &masterclat,CompactLattice &htclat,
+		guint *num_words) {
+	  if (masterclat.NumStates() == 0) {
+		KALDI_WARN<< "Empty lattice.";
+		return;
+	  }
+	
+
+		//gst_kaldinnet2onlinedecoder_scale_lattice(filter, masterclat);
+
+		//gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, htclat);
+		
+		std::vector<lat_ctm> master_ctm; 
+		bool ok = ComputeCtm(masterclat,*(filter->trans_model), *(filter->word_boundary_info),  filter->word_syms, -1.0, master_ctm);
+
+		std::vector<lat_ctm> hot_ctm; 
+		ok = ComputeCtm(htclat,*(filter->trans_model), *(filter->word_boundary_info),  filter->hword_syms, -1.0, hot_ctm);
+		
+
+	
+
+		std::string best_transcript = CombineCtm(master_ctm, hot_ctm);
+	
+		GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
+		
+
+		  // GST_INFO_OBJECT(filter, "Final (Combined): %s", best_transcript.c_str());
+		  std::cout << "Final (Combined):" << ' ' << " ↓ " << std::endl;
+
+	
+		guint hyp_length = best_transcript.length();
+		std::cout<<"vdebug length"<<best_transcript.length()<<std::endl;
+		*num_words=hyp_length;
+
+		if (hyp_length > 0) {
+		  GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
+		  gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
+		  gst_buffer_memset(buffer, hyp_length, '\n', 1);
+		  gst_pad_push(filter->srcpad, buffer);
+	
+		  /* Emit a signal for applications. */
+		  g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
+	
+		}
+		std::cout << "---" << ' ' << std::endl;
+	
+
+	}
+
+
+
 /**
 * @author:    tlvu
 * @modifier:  
@@ -1479,6 +1693,42 @@ static void gst_kaldinnet2onlinedecoder_partial_hwresult(
     g_signal_emit(filter,
                   gst_kaldinnet2onlinedecoder_signals[PARTIAL_RESULT_SIGNAL], 0,
                   transcript.c_str());
+  }
+}
+	
+/**
+* @author:	  tlvu
+* @modifier:  
+* @date:	  Nov 18, 2021
+* @describe:  Get the partial result for Hotword and master ASR combined
+*
+**/ 
+static void gst_kaldinnet2onlinedecoder_partial_combined(
+	Gstkaldinnet2onlinedecoder * filter, SingleUtteranceNnet3Decoder & masterdecoder, SingleUtteranceNnet3Decoder & htdecoder,bool end_of_utterance) {
+
+  BaseFloat lmwt = 7.0;  // we pass lm_scale throught filter so that it can be changed when HCLG is changed
+
+	  CompactLattice masterlat;
+	  masterdecoder.GetLattice(end_of_utterance, &masterlat);
+
+  std::vector<lat_ctm> master_ctm; 
+  bool ok = ComputeCtm(masterlat,*(filter->trans_model), *(filter->word_boundary_info),  filter->word_syms, lmwt, master_ctm);
+
+  CompactLattice htlat;
+  masterdecoder.GetLattice(end_of_utterance, &htlat);
+  lmwt = 21.0;
+  std::vector<lat_ctm> hot_ctm;
+  bool hot_ok = ComputeCtm(htlat, *(filter->trans_model), *(filter->word_boundary_info), filter->hword_syms, lmwt, hot_ctm);
+  string final_result = CombineCtm(master_ctm, hot_ctm);
+  
+
+
+  GST_DEBUG_OBJECT(filter, "Partial combined: %s", final_result.c_str());
+  if (final_result.length() > 0) {
+	/* Emit a signal for applications. */
+	g_signal_emit(filter,
+				  gst_kaldinnet2onlinedecoder_signals[PARTIAL_RESULT_SIGNAL], 0,
+				  final_result.c_str());
   }
 }
 
@@ -1596,6 +1846,7 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
                                                       int32 chunk_length,
                                                       BaseFloat traceback_period_secs,
                                                       Vector<BaseFloat> *remaining_wave_part) {
+														
     SingleUtteranceNnet2DecoderThreaded decoder(*(filter->nnet2_decoding_threaded_config),
                                         *(filter->trans_model), 
                                         *(filter->am_nnet2),
@@ -1962,6 +2213,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                                         bool &more_data,
                                                         int32 chunk_length,
                                                         BaseFloat traceback_period_secs) {
+  std::cout<<"nnet3 vdebug";
 
   OnlineNnet2FeaturePipeline feature_pipeline(*(filter->feature_info));
   feature_pipeline.SetAdaptationState(*(filter->adaptation_state));
@@ -1972,12 +2224,12 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                       *(filter->decode_fst),
                                       &feature_pipeline);
   
-  // @tlvu Nov 19, 2021                                  
-  SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
-                                      *(filter->trans_model), 
-                                      *(filter->decodable_info_nnet3),
-                                      *(filter->decode_hfst),
-                                      &feature_pipeline);
+SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
+									  *(filter->trans_model), 
+									  *(filter->decodable_info_nnet3),
+									  *(filter->decode_hfst),
+									  &feature_pipeline);
+
 
   Vector<BaseFloat> wave_part = Vector<BaseFloat>(chunk_length);
   GST_DEBUG_OBJECT(filter, "Reading audio in %d sample chunks...",
@@ -1987,8 +2239,65 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
 
   int32 frame_subsampling_factor = filter->nnet3_decodable_opts->frame_subsampling_factor;
   BaseFloat frame_shift = filter->feature_info->FrameShiftInSeconds();
-
+  
   while (more_data) {
+
+
+
+  
+  // @victor Nov 25, 2021: Start
+  gchar* hw_wordlist_filepath = filter->hword_syms_filename;
+
+  struct stat hw_filestats_check;
+  if (lstat(hw_wordlist_filepath, &hw_filestats_check) == 0 || true) {
+	int32 filesize = hw_filestats_check.st_size; //hw_wordlist_filestats.st_size;
+	auto mod_time = hw_filestats_check.st_mtime;
+  
+	if (true || (hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) {
+	  std::cout << "*********** [New filesize of the decoder graph]: " << ' ' << filesize << std::endl;
+	  std::cout << "*********** [New modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+
+
+	  hw_wordlist_filestats = hw_filestats_check;
+        //if (filter->decode_hfst) {
+        //  delete filter->decode_hfst;
+        //}
+		std::cout<<"begin load hclg";
+	  fst::Fst<fst::StdArc> * new_decode_fst = fst::ReadFstKaldiGeneric( filter->hfst_rspecifier);
+	  		std::cout<<"done load hclg";
+	  filter->decode_hfst = new_decode_fst;
+
+
+	  // Delete old objects if needed
+	  if (filter->hword_syms) {
+		delete filter->hword_syms;
+	  }
+
+      fst::SymbolTable * new_word_syms = fst::SymbolTable::ReadText(filter->hword_syms_filename);
+	  // Replace the symbol table
+	  filter->hword_syms = new_word_syms;
+
+			  
+  		SingleUtteranceNnet3Decoder hwdecoder(*(filter->decoder_opts),
+                                      *(filter->trans_model), 
+                                      *(filter->decodable_info_nnet3),
+                                      *(filter->decode_hfst),
+                                      &feature_pipeline);
+	} else {
+	  std::cout << "*********** [No changes]" << std::endl;
+	}
+  }
+   g_free(hw_wordlist_filepath);
+  // @victorNov 25, 2021: End
+
+
+
+
+
+
+
+
+  
     decoder.InitDecoding(frame_offset);
     // @tlvu Nov 19, 2021
     hwdecoder.InitDecoding(frame_offset);
@@ -2041,18 +2350,26 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         break;
       }
 
-      if ((num_seconds_decoded - last_traceback > traceback_period_secs)
-          && (decoder.NumFramesDecoded() > 0)
-          && (hwdecoder.NumFramesDecoded() > 0)) {
-        Lattice lat;
-        decoder.GetBestPath(false, &lat);
-        gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
-        
-        // @tlvu Nov 19, 2021
-        Lattice hwlat;
-        hwdecoder.GetBestPath(false, &hwlat);
-        gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
-        last_traceback += traceback_period_secs;
+		  
+	  if ((num_seconds_decoded - last_traceback > traceback_period_secs)
+		  && (decoder.NumFramesDecoded() > 0)
+		  && (hwdecoder.NumFramesDecoded() > 0)) {
+		Lattice lat;
+		decoder.GetBestPath(false, &lat);
+		gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+		
+		// @tlvu Nov 19, 2021
+		Lattice hwlat;
+		hwdecoder.GetBestPath(false, &hwlat);
+		gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
+		last_traceback += traceback_period_secs;
+
+
+                // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
+
+
+
+		
       }
     }
 
@@ -2093,7 +2410,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       // @tlvu Nov 19, 2021
       guint num_hwords = 0;
       gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
-      
+	  
+      gst_kaldinnet2onlinedecoder_final_combined_result(filter,clat,hw_lat,&num_hwords);
       if ((num_words >= filter->min_words_for_ivector) 
           && (num_hwords >= filter->min_words_for_ivector)) {
         // Only update adaptation state if the utterance contained enough words
