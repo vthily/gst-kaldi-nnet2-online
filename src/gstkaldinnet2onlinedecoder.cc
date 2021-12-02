@@ -88,7 +88,7 @@ bool ComputeCtm(CompactLattice clat, TransitionModel& trans_model, WordBoundaryI
 
   if (lmwt > 0)
     lm_scale = lmwt;
-  
+   
   fst::ScaleLattice(fst::LatticeScale(lm_scale, acoustic_scale), &clat);
   if (word_ins_penalty > 0.0) {
     AddWordInsPenToCompactLattice(word_ins_penalty, &clat);
@@ -101,8 +101,10 @@ bool ComputeCtm(CompactLattice clat, TransitionModel& trans_model, WordBoundaryI
   fst::ScaleLattice(fst::LatticeScale(1.0 / lm_scale, 1.0 / acoustic_scale), &best_path_clat);
 
   bool ok = WordAlignLattice(best_path_clat, trans_model, info, 0, &aligned_clat);
-
   TopSortCompactLatticeIfNeeded(&aligned_clat);
+
+  //CompactLattice  align_best_path_clat;
+  //CompactLatticeShortestPath(aligned_clat, & align_best_path_clat);
 
   ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
   ctm.clear();
@@ -1615,6 +1617,7 @@ static std::string gst_kaldinnet2onlinedecoder_full_final_combined_result_to_jso
   json_array_append( nbest_json_arr, nbest_result_json_object );
 
   json_object_set_new(result_json_object, "hypotheses", nbest_json_arr);
+
   char *ret_strings = json_dumps(root, JSON_REAL_PRECISION(6));
 
   json_decref(root);
@@ -2390,9 +2393,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         // hwdecoder_p->GetBestPath(false, &hwlat);
         // gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
         last_traceback += traceback_period_secs;
-
-
-        // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
+        
+	// gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
         // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
       }
     }
