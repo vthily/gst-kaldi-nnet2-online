@@ -99,13 +99,18 @@ struct _Gstkaldinnet2onlinedecoder {
   gchar* word_boundary_info_filename;
 
   SimpleOptionsGst *simple_options;
+  SimpleOptionsGst *hw_options;
+  
   OnlineEndpointConfig *endpoint_config;
   OnlineNnet2FeaturePipelineConfig *feature_config;
   OnlineNnet2DecodingThreadedConfig *nnet2_decoding_threaded_config;
   OnlineNnet2DecodingConfig *nnet2_decoding_config;
   // support for nnet3
   nnet3::NnetSimpleLoopedComputationOptions *nnet3_decodable_opts;
+  //nnet3::NnetSimpleLoopedComputationOptions *nnet3_decodable_hwopts;
+  
   LatticeFasterDecoderConfig *decoder_opts;  
+  LatticeFasterDecoderConfig *hwdecoder_opts;
   fst::DeterminizeLatticePrunedOptions *det_opts;
   
   OnlineSilenceWeightingConfig *silence_weighting_config;

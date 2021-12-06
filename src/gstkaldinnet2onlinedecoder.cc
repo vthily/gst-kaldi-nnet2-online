@@ -101,6 +101,7 @@ bool ComputeCtm(CompactLattice clat, TransitionModel& trans_model, WordBoundaryI
   fst::ScaleLattice(fst::LatticeScale(1.0 / lm_scale, 1.0 / acoustic_scale), &best_path_clat);
 
   bool ok = WordAlignLattice(best_path_clat, trans_model, info, 0, &aligned_clat);
+
   TopSortCompactLatticeIfNeeded(&aligned_clat);
 
   //CompactLattice  align_best_path_clat;
@@ -259,6 +260,8 @@ enum {
   PROP_INVERSE_SCALE,
   PROP_LMWT_SCALE,
   PROP_HLMWT_SCALE, // @tlvu Nov 18, 2021
+  PROP_HW_BEAM,  // @tlvu Nov 18, 2021
+  PROP_HW_LATTICE_BEAM, // @tlvu Nov 18, 2021
   PROP_CHUNK_LENGTH_IN_SECS,
   PROP_TRACEBACK_PERIOD_IN_SECS,
   PROP_LM_FST,
@@ -281,12 +284,18 @@ enum {
 #define DEFAULT_WORD_BOUNDARY_FILE ""
 #define DEFAULT_LMWT_SCALE      1.0
 #define DEFAULT_HLMWT_SCALE     21.0 // @tlvu Nov 18, 2021
+#define DEFAULT_HW_LATTICE_BEAM 5.0
+#define DEFAULT_HW_BEAM         10.0
 #define DEFAULT_CHUNK_LENGTH_IN_SECS  0.05
 #define DEFAULT_TRACEBACK_PERIOD_IN_SECS  0.5
 #define DEFAULT_USE_THREADED_DECODER false
 #define DEFAULT_NUM_NBEST 1
 #define DEFAULT_NUM_PHONE_ALIGNMENT 1
 #define DEFAULT_MIN_WORDS_FOR_IVECTOR 2
+
+
+bool _DEBUG = true;
+bool _DUAL_DECODER = true;
 
 /**
  * Some structs used for storing recognition results
@@ -551,6 +560,30 @@ static void gst_kaldinnet2onlinedecoder_class_init(
           DEFAULT_HLMWT_SCALE,
           (GParamFlags) G_PARAM_READWRITE));
 
+  // @tlvu Dec 06, 2021
+  g_object_class_install_property(
+      gobject_class,
+      PROP_HW_BEAM,
+      g_param_spec_float(
+          "hw-beam", "Hotword search beam",
+          "Hotword search beam",
+          G_MINFLOAT,
+          G_MAXFLOAT,
+          DEFAULT_HW_BEAM,
+          (GParamFlags) G_PARAM_READWRITE));
+
+  // @tlvu Dec 06, 2021
+  g_object_class_install_property(
+      gobject_class,
+      PROP_HW_LATTICE_BEAM,
+      g_param_spec_float(
+          "hw-lattice-beam", "Hotword lattice beam",
+          "Hotword lattice beam",
+          G_MINFLOAT,
+          G_MAXFLOAT,
+          DEFAULT_HW_LATTICE_BEAM,
+          (GParamFlags) G_PARAM_READWRITE));
+
   g_object_class_install_property(
       gobject_class,
       PROP_CHUNK_LENGTH_IN_SECS,
@@ -726,19 +759,22 @@ static void gst_kaldinnet2onlinedecoder_init(
   filter->num_phone_alignment = 1;
 
   filter->simple_options = new SimpleOptionsGst();
+  filter->hw_options = new SimpleOptionsGst();
 
   filter->endpoint_config = new OnlineEndpointConfig();
   filter->feature_config = new OnlineNnet2FeaturePipelineConfig();
   filter->nnet2_decoding_config = new OnlineNnet2DecodingConfig();
   filter->nnet2_decoding_threaded_config = new OnlineNnet2DecodingThreadedConfig();
   filter->nnet3_decodable_opts = new nnet3::NnetSimpleLoopedComputationOptions();
+  //filter->nnet3_decodable_hwopts = new nnet3::NnetSimpleLoopedComputationOptions();
   filter->decoder_opts = new LatticeFasterDecoderConfig();
+  filter->hwdecoder_opts = new LatticeFasterDecoderConfig();
   filter->silence_weighting_config = new OnlineSilenceWeightingConfig();
 
   filter->endpoint_config->Register(filter->simple_options);
   filter->feature_config->Register(filter->simple_options);
   filter->silence_weighting_config->Register(filter->simple_options);
-
+  
   // since the properties of the decoders overlap, they need to be set in the correct order
   // we'll redo this if the use-threaded-decoder property is changed
   if (DEFAULT_NNET_MODE == NNET2) {
@@ -754,8 +790,11 @@ static void gst_kaldinnet2onlinedecoder_init(
   } else {
     // nnet3 doesn't have a threaded decoder
     filter->nnet2_decoding_config->Register(filter->simple_options);
+    std::cout << "Start registering nnet3_decodable_opts" << std::endl;
     filter->nnet3_decodable_opts->Register(filter->simple_options);
+    //filter->nnet3_decodable_hwopts->Register(filter->hw_options);
     filter->decoder_opts->Register(filter->simple_options);
+    filter->hwdecoder_opts->Register(filter->hw_options);
   }
 
   filter->det_opts = new fst::DeterminizeLatticePrunedOptions();
@@ -791,7 +830,7 @@ static void gst_kaldinnet2onlinedecoder_init(
     std::pair<std::string, SimpleOptions::OptionInfo> result = (*dx);
     SimpleOptions::OptionInfo option_info = result.second;
     std::string name = result.first;
-
+    
     // GetOptionInfoList returns duplicate options
     if (seen_options.find(name) != seen_options.end())
       continue;
@@ -801,6 +840,7 @@ static void gst_kaldinnet2onlinedecoder_init(
     switch (option_info.type) {
       case SimpleOptions::kBool:
         filter->simple_options->GetOption(name, &tmp_bool);
+        filter->hw_options->GetOption(name, &tmp_bool);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -810,6 +850,7 @@ static void gst_kaldinnet2onlinedecoder_init(
         break;
       case SimpleOptions::kInt32:
         filter->simple_options->GetOption(name, &tmp_int);
+        filter->hw_options->GetOption(name, &tmp_int);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -821,6 +862,7 @@ static void gst_kaldinnet2onlinedecoder_init(
         break;
       case SimpleOptions::kUint32:
         filter->simple_options->GetOption(name, &tmp_uint);
+        filter->hw_options->GetOption(name, &tmp_uint);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -831,6 +873,7 @@ static void gst_kaldinnet2onlinedecoder_init(
         break;
       case SimpleOptions::kFloat:
         filter->simple_options->GetOption(name, &tmp_float);
+        filter->hw_options->GetOption(name, &tmp_float);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -842,6 +885,7 @@ static void gst_kaldinnet2onlinedecoder_init(
         break;
       case SimpleOptions::kDouble:
         filter->simple_options->GetOption(name, &tmp_double);
+        filter->hw_options->GetOption(name, &tmp_double);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -853,6 +897,7 @@ static void gst_kaldinnet2onlinedecoder_init(
         break;
       case SimpleOptions::kString:
         filter->simple_options->GetOption(name, &tmp_string);
+        filter->hw_options->GetOption(name, &tmp_string);
         g_object_class_install_property(
             G_OBJECT_CLASS(klass),
             PROP_LAST + i,
@@ -874,8 +919,12 @@ void register_decoding_config(Gstkaldinnet2onlinedecoder *filter) {
     }
   }
   else {
+    std::cout << "register_decoding_config ->  nnet3_decodable_opts" << std::endl;
+
     filter->nnet3_decodable_opts->Register(filter->simple_options);
+    //filter->nnet3_decodable_hwopts->Register(filter->hw_options);
     filter->decoder_opts->Register(filter->simple_options);
+    filter->hwdecoder_opts->Register(filter->hw_options);
   }
 }
 
@@ -1015,12 +1064,22 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
     case PROP_MIN_WORDS_FOR_IVECTOR:
       filter->min_words_for_ivector = g_value_get_uint(value);
       break;
+    case PROP_HW_BEAM:
+      std::cout << "Processing PROP_HW_BEAM " << std::endl;
+      filter->hw_options->SetOption("beam", g_value_get_float(value));
+      break;
+    case PROP_HW_LATTICE_BEAM:
+      std::cout << "Processing PROP_HW_LATTICE_BEAM " << std::endl;
+      filter->hw_options->SetOption("lattice-beam", g_value_get_float(value));
+      break;
     default:
       if (prop_id >= PROP_LAST) {
         const gchar* name = g_param_spec_get_name(pspec);
         SimpleOptions::OptionType option_type;
         if (filter->simple_options->GetOptionType(std::string(name),
                                                   &option_type)) {
+
+          // std::cout << "Processing param: " << std::string(name) << std::endl;
           switch (option_type) {
             case SimpleOptions::kBool:
               filter->simple_options->SetOption(name,
@@ -1034,6 +1093,7 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
               break;
             case SimpleOptions::kFloat:
               filter->simple_options->SetOption(name, g_value_get_float(value));
+              // std::cout << "Value: " << g_value_get_float(value) << std::endl;
               break;
             case SimpleOptions::kDouble:
               filter->simple_options->SetOption(name,
@@ -1646,44 +1706,46 @@ static void gst_kaldinnet2onlinedecoder_final_combined_result(
   gst_kaldinnet2onlinedecoder_scale_lattice(filter, masterclat);
   gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, htclat);
 
-  std::vector<lat_ctm> master_ctm;
-  bool ok = ComputeCtm(masterclat, 
+    std::vector<lat_ctm> master_ctm;
+    bool ok = ComputeCtm(masterclat, 
                        *(filter->trans_model), 
                        *(filter->word_boundary_info),
                        filter->word_syms, 
                        filter->lmwt_scale, 
                        master_ctm);
 
-  std::vector<lat_ctm> hot_ctm;
-  ok = ComputeCtm(htclat,
+    std::vector<lat_ctm> hot_ctm;
+    ok = ComputeCtm(htclat,
                    *(filter->trans_model), 
                    *(filter->word_boundary_info),
                    filter->hword_syms, 
                    filter->hlmwt_scale, 
                    hot_ctm);
 
-  std::string best_transcript = CombineCtm(master_ctm, hot_ctm);  
-  GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
+    std::string best_transcript = CombineCtm(master_ctm, hot_ctm);
 
-  guint hyp_length = best_transcript.length();
-  *num_words=hyp_length;
+    GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
 
-  if (hyp_length > 0) {
-    GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
-    gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
-    gst_buffer_memset(buffer, hyp_length, '\n', 1);
-    gst_pad_push(filter->srcpad, buffer);
+    guint hyp_length = best_transcript.length();
+    *num_words=hyp_length;
 
-    /* Emit a signal for applications. */
-    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
+    if (hyp_length > 0) {
+      GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
+      gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
+      gst_buffer_memset(buffer, hyp_length, '\n', 1);
+      gst_pad_push(filter->srcpad, buffer);
 
-    // @tlvu Nov 22, 2021: Adding parameter
-    std::string full_final_result_as_json =
+      /* Emit a signal for applications. */
+      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
+
+      // @tlvu Nov 22, 2021: Adding parameter
+      std::string full_final_result_as_json =
           gst_kaldinnet2onlinedecoder_full_final_combined_result_to_json(filter,  best_transcript);
-    GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
-    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
+      GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
+      // std::cout << "#DEBUG " << full_final_result_as_json << std::endl;
+      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
 
-  }
+    }
 }
 
 
@@ -2265,7 +2327,11 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                       *(filter->decode_fst),
                                       &feature_pipeline);
 
-  SingleUtteranceNnet3Decoder *hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
+  if (_DEBUG && _DUAL_DECODER) {
+    std::cout << "Hotword beam: " << filter->hwdecoder_opts->beam << std::endl;
+    std::cout << "Hotword lattice beam: " << filter->hwdecoder_opts->lattice_beam << std::endl;
+  }
+  SingleUtteranceNnet3Decoder *hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->hwdecoder_opts),
                     *(filter->trans_model), 
                     *(filter->decodable_info_nnet3),
                     *(filter->decode_hfst),
@@ -2291,22 +2357,21 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       
       if ((hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) 
       {
-        std::cout << " [Detect new filesize of the decoder graph at the beginning]: " << ' ' << filesize << std::endl;
-        std::cout << " [Detect new modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+        if (_DEBUG) {
+          std::cout << " [Detect new filesize of the decoder graph at the beginning]: " << ' ' << filesize << std::endl;
+          std::cout << " [Detect new modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+        }
 
         hw_wordlist_filestats = hw_filestats_check;
         if (filter->decode_hfst) {
-          //delete (*filter).decode_hfst;
           delete filter->decode_hfst;
         }
 
         fst::Fst<fst::StdArc> *new_decode_fst = fst::ReadFstKaldiGeneric(filter->hfst_rspecifier);
         (*filter).decode_hfst = new_decode_fst;
 
-        //delete new_decode_fst;
         // Delete old objects if needed
         if (filter->hword_syms) {
-          //delete (*filter).hword_syms;
           delete filter->hword_syms;
         }
 
@@ -2316,22 +2381,36 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         // Replace the symbol table
         filter->hword_syms = new_word_syms;
         delete hwdecoder_p;  
-        hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
+        hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->hwdecoder_opts),
                                           *(filter->trans_model), 
                                           *(filter->decodable_info_nnet3),
                                           *(filter->decode_hfst),
                                           &feature_pipeline);
         
       } else {
+        if (_DEBUG) {
           std::cout << "[No changes at beginning]" << std::endl;
+        }
       }
     }
     // @victorNov 25, 2021: End
-
+    /** 
+    clock_t begin_init_decoding = clock();
+    */
     decoder.InitDecoding(frame_offset);
 
-    // @tlvu Nov 19, 2021
-    hwdecoder_p->InitDecoding(frame_offset);
+    if (_DUAL_DECODER) {
+      // @tlvu Nov 19, 2021
+      hwdecoder_p->InitDecoding(frame_offset);
+    }
+    /** 
+    if (_DEBUG) {
+      clock_t end_init_decoding = clock();
+      double elapsed_secs = double(end_init_decoding - begin_init_decoding) / CLOCKS_PER_SEC;
+      std::cout << " ==== Elapsed time for init decoding: " << elapsed_secs << std::endl;
+    }
+    */
+      
     OnlineSilenceWeighting silence_weighting(*(filter->trans_model),
           *(filter->silence_weighting_config), 
           frame_subsampling_factor);
@@ -2339,7 +2418,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
 
     BaseFloat last_traceback = 0.0;
     BaseFloat num_seconds_decoded = 0.0;
-
+    clock_t begin = clock();
+    
     while (true) {
       more_data = filter->audio_source->Read(&wave_part);
 
@@ -2351,68 +2431,133 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       if (silence_weighting.Active() && 
           feature_pipeline.IvectorFeature() != NULL) {
         silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
-        // @tlvu Nov 19, 2021
-        silence_weighting.ComputeCurrentTraceback(hwdecoder_p->Decoder());
+        if (_DUAL_DECODER) {
+          // @tlvu Nov 19, 2021
+          silence_weighting.ComputeCurrentTraceback(hwdecoder_p->Decoder());
+        }
         silence_weighting.GetDeltaWeights(feature_pipeline.NumFramesReady(), 
                                           frame_offset * frame_subsampling_factor,
                                           &delta_weights);
         feature_pipeline.UpdateFrameWeights(delta_weights);
       }
 
+      /**
+      clock_t begin_advance_decoding = clock();
+      */
       decoder.AdvanceDecoding();
       GST_DEBUG_OBJECT(filter, "%d frames decoded", decoder.NumFramesDecoded());
-      // @tlvu Nov 19, 2021
-      hwdecoder_p->AdvanceDecoding();
-      GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder_p->NumFramesDecoded());
-      
+      if (_DUAL_DECODER) {
+        // @tlvu Nov 19, 2021
+        hwdecoder_p->AdvanceDecoding();
+        //GST_INFO_OBJECT(filter, "%d frames decoded", hwdecoder_p->NumFramesDecoded());
+      }
+      /**
+      if (_DEBUG) {
+        clock_t end_advance_decoding = clock();
+        double elapsed_secs = double(end_advance_decoding - begin_advance_decoding) / CLOCKS_PER_SEC;
+        std::cout << " ==== Elapsed time for advance decoding: " << elapsed_secs << std::endl;
+      } 
+      */
+
       num_seconds_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
       filter->total_time_decoded += 1.0 * wave_part.Dim() / filter->sample_rate;
       GST_DEBUG_OBJECT(filter, "Total amount of audio processed: %f seconds", filter->total_time_decoded);
       if (!more_data) {
         break;
       }
-      if (filter->do_endpointing
-          && (decoder.NumFramesDecoded() > 0)
-          && decoder.EndpointDetected(*(filter->endpoint_config))
-          && (hwdecoder_p->NumFramesDecoded() > 0)
-          && hwdecoder_p->EndpointDetected(*(filter->endpoint_config))) {
-        GST_DEBUG_OBJECT(filter, "Endpoint detected!");
-        break;
+      if (_DUAL_DECODER) {
+        if (filter->do_endpointing
+            && (decoder.NumFramesDecoded() > 0)
+            && decoder.EndpointDetected(*(filter->endpoint_config))
+            && (hwdecoder_p->NumFramesDecoded() > 0)
+            && hwdecoder_p->EndpointDetected(*(filter->endpoint_config))
+        ) {
+          GST_DEBUG_OBJECT(filter, "Endpoint detected!");
+          break;
+        } 
+      } else {
+        if (filter->do_endpointing
+              && (decoder.NumFramesDecoded() > 0)
+              && decoder.EndpointDetected(*(filter->endpoint_config))
+          ) {
+            GST_DEBUG_OBJECT(filter, "Endpoint detected!");
+            break;
+          }       
       }
 
-      
-      if ((num_seconds_decoded - last_traceback > traceback_period_secs)
-          && (decoder.NumFramesDecoded() > 0)
-          && (hwdecoder_p->NumFramesDecoded() > 0)) {
-        Lattice lat;
-        decoder.GetBestPath(false, &lat);
-        gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
-        
-        // @tlvu Nov 19, 2021
-        // Lattice hwlat;
-        // hwdecoder_p->GetBestPath(false, &hwlat);
-        // gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
-        last_traceback += traceback_period_secs;
-        
-	// gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
-        // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
+
+      if (_DUAL_DECODER) { 
+        if ((num_seconds_decoded - last_traceback > traceback_period_secs)
+            && (decoder.NumFramesDecoded() > 0)
+            && (hwdecoder_p->NumFramesDecoded() > 0)
+            ) {
+          Lattice lat;
+          decoder.GetBestPath(false, &lat);
+          gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+          
+          // @tlvu Nov 19, 2021
+          //Lattice hwlat;
+          //hwdecoder_p->GetBestPath(false, &hwlat);
+          //gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
+          last_traceback += traceback_period_secs;
+
+
+          // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
+          // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
+        }
+      } else {
+        if ((num_seconds_decoded - last_traceback > traceback_period_secs)
+            && (decoder.NumFramesDecoded() > 0)
+            ) {
+          Lattice lat;
+          decoder.GetBestPath(false, &lat);
+          gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+          
+          last_traceback += traceback_period_secs;
+        }
       }
     }
 
     if (num_seconds_decoded > 0.1) {
       GST_DEBUG_OBJECT(filter, "Getting lattice..");
+      /**
+      clock_t begin_finalize_decoding = clock();
+      */
       decoder.FinalizeDecoding();
-      // @tlvu Nov 19, 2021
-      hwdecoder_p->FinalizeDecoding();
+      if (_DUAL_DECODER) { 
+        // @tlvu Nov 19, 2021
+        hwdecoder_p->FinalizeDecoding();
+      }
+      /** 
+      if (_DEBUG) {
+        clock_t end_finalize_decoding = clock();
+        double elapsed_secs = double(end_finalize_decoding - begin_finalize_decoding) / CLOCKS_PER_SEC;
+        std::cout << " ==== Elapsed time for finalize decoding: " << elapsed_secs << std::endl;
+      }
+      */
+    
       frame_offset += decoder.NumFramesDecoded();
       
+      /**
+      clock_t begin_lattice = clock();
+      */
       CompactLattice clat;
       bool end_of_utterance = true;
       decoder.GetLattice(end_of_utterance, &clat);
       
       // @tlvu Nov 19, 2021
       CompactLattice hw_lat;
-      hwdecoder_p->GetLattice(end_of_utterance, &hw_lat);
+      if (_DUAL_DECODER) { 
+        // @tlvu Nov 19, 2021  
+        hwdecoder_p->GetLattice(end_of_utterance, &hw_lat);
+      }
+      /**
+      if (_DEBUG) {
+        clock_t end_lattice = clock();
+        double elapsed_secs = double(end_lattice - begin_lattice) / CLOCKS_PER_SEC;
+        std::cout << " ==== Elapsed time for getting lattice: " << elapsed_secs << std::endl;
+      }
+      */
       
       GST_DEBUG_OBJECT(filter, "Lattice done");
       if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
@@ -2423,32 +2568,45 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           clat = rescored_lat;
         }
         
-        // @tlvu Nov 19, 2021
-        CompactLattice rescored_hwlat;
-        if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hw_lat, rescored_hwlat)) {
-          hw_lat = rescored_hwlat;
+        if (_DUAL_DECODER) { 
+          // @tlvu Nov 19, 2021
+          CompactLattice rescored_hwlat;
+          if (gst_kaldinnet2onlinedecoder_rescore_big_lm(filter, hw_lat, rescored_hwlat)) {
+            hw_lat = rescored_hwlat;
+          }
         }
       }
 
-      // guint num_words = 0;
-      // gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
+      /**
+      clock_t begin_final_results = clock();
+      */
+      guint num_words = 0;    
+      if (_DUAL_DECODER) { 
+        // @tlvu Nov 19, 2021
+        guint num_hwords = 0;
+        // gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
+        
+        gst_kaldinnet2onlinedecoder_final_combined_result(filter, clat, hw_lat, &num_words);
+        
+      } else {
+        gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
+      }
       
-      // @tlvu Nov 19, 2021
-      guint num_hwords = 0;
-      // gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
-    
-      gst_kaldinnet2onlinedecoder_final_combined_result(filter, clat, hw_lat, &num_hwords);
+      /**
+      if (_DEBUG) {
+        clock_t end_final_results = clock();
+        double elapsed_secs = double(end_final_results - begin_final_results) / CLOCKS_PER_SEC;
+        std::cout << " ==== Elapsed time for getting final results: " << elapsed_secs << std::endl;
+      }
+      */
       
-      if ( //(num_words >= filter->min_words_for_ivector) 
-          (num_hwords >= filter->min_words_for_ivector)) {
+      if ((num_words >= filter->min_words_for_ivector)) {
         // Only update adaptation state if the utterance contained enough words
         feature_pipeline.GetAdaptationState(filter->adaptation_state);
         feature_pipeline.GetCmvnState(filter->cmvn_state);
       }
     
       // @victor Nov 25, 2021: Start
-      //gchar* hw_wordlist_filepath = filter->hword_syms_filename;
-
       struct stat hw_filestats_check;
       if (lstat(filter->hword_syms_filename, &hw_filestats_check) == 0) 
       {
@@ -2457,21 +2615,20 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         
         if ((hw_filestats_check.st_size != hw_wordlist_filestats.st_size) && (hw_filestats_check.st_mtime != hw_wordlist_filestats.st_mtime)) 
         {
-          std::cout << " [Detect new filesize of the decoder graph at the end]: " << ' ' << filesize << std::endl;
-          std::cout << " [Detect new modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+          if (_DEBUG) {
+            std::cout << " [Detect new filesize of the decoder graph at the end]: " << ' ' << filesize << std::endl;
+            std::cout << " [Detect new modified time of the decoder graph]: " << ' ' << mod_time << std::endl;
+          }
 
           hw_wordlist_filestats = hw_filestats_check;
           if (filter->decode_hfst) {
-            //delete (*filter).decode_hfst;
             delete filter->decode_hfst;
           }
           fst::Fst<fst::StdArc> *new_decode_fst = fst::ReadFstKaldiGeneric(filter->hfst_rspecifier);
           (*filter).decode_hfst = new_decode_fst;
 
           //delete new_decode_fst;
-          // Delete old objects if needed
           if (filter->hword_syms) {
-            //delete (*filter).hword_syms;
             delete filter->hword_syms;
           }
 
@@ -2482,14 +2639,16 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           filter->hword_syms = new_word_syms;
 
           delete hwdecoder_p;  
-          hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->decoder_opts),
+          hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->hwdecoder_opts),
                                         *(filter->trans_model), 
                                         *(filter->decodable_info_nnet3),
                                         *(filter->decode_hfst),
                                         &feature_pipeline);
 
         } else {
-          std::cout << "[No changes at the end]" << std::endl;
+          if (_DEBUG) {
+            std::cout << "[No changes at the end]" << std::endl;
+          }
         }
       }
       // @victorNov 25, 2021: End
@@ -2497,7 +2656,13 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     } else {
       GST_DEBUG_OBJECT(filter, "Less than 0.1 seconds decoded, discarding");
     }
-
+    
+    if (_DEBUG) {
+      clock_t end = clock();
+      double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
+      std::cout << " >>>>> Total elapsed time for the utterance decoding: " << elapsed_secs << std::endl;
+      std::cout << " >>>>> Utterance length (in seconds): " << (filter->total_time_decoded - filter->segment_start_time) << std::endl;
+    }
     filter->segment_start_time = frame_offset * frame_shift * frame_subsampling_factor;
   }
   
@@ -3133,8 +3298,10 @@ static void gst_kaldinnet2onlinedecoder_finalize(GObject * object) {
   delete filter->nnet2_decoding_config;
   delete filter->nnet3_decodable_opts;
   delete filter->decoder_opts;
+  delete filter->hwdecoder_opts;
   delete filter->silence_weighting_config;
   delete filter->simple_options;
+  delete filter->hw_options;
   if (filter->feature_info) {
     delete filter->feature_info;
   }
