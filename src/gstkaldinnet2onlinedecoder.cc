@@ -2120,7 +2120,7 @@ static void gst_kaldinnet2onlinedecoder_final_nbest_combined_results (
     return;
   }
 
-  gst_kaldinnet2onlinedecoder_scale_lattice(filter, master_clat);
+  //gst_kaldinnet2onlinedecoder_scale_lattice(filter, master_clat);
   gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, hw_clat);
 
   FullFinalResult full_final_master_result;
@@ -2187,9 +2187,9 @@ static void gst_kaldinnet2onlinedecoder_final_result(
   }
 
   if (is_hotword) {
-    gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
-  } else {
     gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
+  } else {
+    gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
   }
 
   FullFinalResult full_final_result;
@@ -2264,9 +2264,10 @@ static void gst_kaldinnet2onlinedecoder_partial_hwresult(
   GST_DEBUG_OBJECT(filter, "Partial: %s", transcript.c_str());
   if (transcript.length() > 0) {
     /* Emit a signal for applications. */
-    g_signal_emit(filter,
-                  gst_kaldinnet2onlinedecoder_signals[PARTIAL_RESULT_SIGNAL], 0,
-                  transcript.c_str());
+    //g_signal_emit(filter,
+    //              gst_kaldinnet2onlinedecoder_signals[PARTIAL_RESULT_SIGNAL], 0,
+    //              transcript.c_str());
+    std::cout << "Hotword partial results: " << transcript << std::endl; 
   }
 }
   
@@ -2847,6 +2848,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           *(filter->silence_weighting_config), 
           frame_subsampling_factor);
     std::vector<std::pair<int32, BaseFloat> > delta_weights;
+    std::vector<std::pair<int32, BaseFloat> > hw_delta_weights;
 
     BaseFloat last_traceback = 0.0;
     BaseFloat num_seconds_decoded = 0.0;
@@ -2878,8 +2880,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         
         hw_silence_weighting.GetDeltaWeights(hw_feature_pipeline.NumFramesReady(), 
                                           frame_offset * frame_subsampling_factor,
-                                          &delta_weights);
-        hw_feature_pipeline.UpdateFrameWeights(delta_weights);
+                                          &hw_delta_weights);
+        hw_feature_pipeline.UpdateFrameWeights(hw_delta_weights);
       }
 
       /**
@@ -2939,7 +2941,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           // @tlvu Nov 19, 2021
           Lattice hwlat;
           hwdecoder_p->GetBestPath(false, &hwlat);
-          //gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
+          gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
           last_traceback += traceback_period_secs;
 
 
