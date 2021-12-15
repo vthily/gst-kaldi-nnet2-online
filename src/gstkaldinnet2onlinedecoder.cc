@@ -116,7 +116,19 @@ bool ComputeCtm(CompactLattice clat, TransitionModel& trans_model, WordBoundaryI
     lat_ctm ctm_entry;
     ctm_entry.start = frame_shift * times[i]; ctm_entry.dur = frame_shift * lengths[i];
     ctm_entry.word  = word_syms->Find(words[i]);
-    ctm.push_back(ctm_entry);
+    
+    if (ctm_entry.word  == "<unk>") {
+      std::cout << "Ingore <unk> token" << std::endl;
+    } else {
+      ctm.push_back(ctm_entry);
+    }
+    /**
+    if (lmwt == 21) {
+      std::cout << "Hotword: " << ctm_entry.start << " " << ctm_entry.dur << ": " << ctm_entry.word << std::endl;
+    } else {
+      std::cout << "Word: " << ctm_entry.start << " " << ctm_entry.dur << ": " << ctm_entry.word << std::endl;
+    }
+    */
   }
 
   return ok;
@@ -139,11 +151,11 @@ string CombineCtm(std::vector<lat_ctm> & master_ctm, std::vector<lat_ctm>& hot_c
       std::replace(ctm_entry.word.begin(), ctm_entry.word.end(), '_', ' ');
       // trim leading spaces
       size_t startpos = ctm_entry.word.find_first_not_of(" \t");
-      if( string::npos != startpos )
-      {
+      if( string::npos != startpos ) {
         ctm_entry.word = ctm_entry.word.substr( startpos );
       }
       ctm_entry.word = "《" + ctm_entry.word + "》";
+      //std::cout << ctm_entry.start << " + " << ctm_entry.dur << ": " << ctm_entry.word << std::endl;
       hwlist.push_back(ctm_entry);
     }
   }
@@ -159,52 +171,67 @@ string CombineCtm(std::vector<lat_ctm> & master_ctm, std::vector<lat_ctm>& hot_c
     bool  bDel = false;
     for (int j = 0; j < len2; j++)
     {
-      // case 1 :master_ctm[i] is in front of hwlist[j] and no overlap
+      // case 1: master_ctm[i] is in front of hwlist[j] and no overlap
       if (master_ctm[i].start <= hwlist[j].start && master_ctm[i].start + master_ctm[i].dur <= hwlist[j].start){
         break;  // no need to cal overlap with next hotword as obviously no overlap.
       }
-      //case 2::master_ctm[i] is in front of hwlist[j] and overlap
+      // case 2: master_ctm[i] is in front of hwlist[j] and overlap
       if (master_ctm[i].start <= hwlist[j].start && master_ctm[i].start + master_ctm[i].dur > hwlist[j].start) {
         // two cases; master_ctm[i] contains part or whole hwlist[j]
-        // case 2.1 master_ctm[i] contains whole hwlist[j]
+        // case 2.1: master_ctm[i] contains whole hwlist[j]
         if (master_ctm[i].start + master_ctm[i].dur >= hwlist[j].start + hwlist[j].dur) {
-          // no need to check with other hotwords, mark this for deletion; whole hotword hwlist[j] inside the master word master_ctm[i]
-          bDel = true;  // mark for delete, no mneed to calculate overlap rate
-          break; 
+          // @tlvu: December 13, 2021
+          // Check if the master is <unk> but hotword is different
+          if (master_ctm[i].word == "<unk>" && hwlist[j].word != "<unk>") {
+            new_master_ctm.push_back(hwlist[i]);// include this word in the final result 
+          } else {
+            // no need to check with other hotwords, mark this for deletion; whole hotword hwlist[j] inside the master word master_ctm[i]
+            bDel = true;  // mark for delete, no mneed to calculate overlap rate
+            break; 
+          }
         } 
-        else {// 2.2 calcluate overlap duration 
+        else {
+          // case 2.2: calculate overlap duration 
           overlap_dur += master_ctm[i].start + master_ctm[i].dur - hwlist[j].start;
           break; // no need to calculate overlap with next hotword as obviously no overlap 
         }  
       }
-      // case 4 : master_ctm[i] is behind hwlist[j] and overlap
+      // case 4: master_ctm[i] is behind hwlist[j] and overlap
       if (master_ctm[i].start > hwlist[j].start  &&  hwlist[j].start + hwlist[j].dur > master_ctm[i].start) {
-        // two cases;hwlist[j] contains part or whole master_ctm[i]
-        // case 4.1 // hotword hwlist[j] contains whole master_ctm[i];
+        // two cases: hwlist[j] contains part or whole master_ctm[i]
+          // case 4.1: hotword hwlist[j] contains whole master_ctm[i];
         if (hwlist[j].start + hwlist[j].dur >= master_ctm[i].start + master_ctm[i].dur) {
           bDel = true; // delete obviously 
           break;
-        }else  {  // 4.2 calcluate overlap duration 
+        } else  {  
+          // case 4.2: calculate overlap duration 
           overlap_dur += hwlist[j].start + hwlist[j].dur -  master_ctm[i].start;
           continue;  // continue master_ctm[i] with next hwlist[j+1]; 
         }
       }
-      // case 6:  master_ctm[i] is behind hwlist[j] and  no overlap
+      // case 6: master_ctm[i] is behind hwlist[j] and  no overlap
       if (master_ctm[i].start > hwlist[j].start  &&  hwlist[j].start + hwlist[j].dur <= master_ctm[i].start) {
         continue;  // continue master_ctm[i] with next hwlist[j+1] for possible overlap; 
       }
     }
 
-    if (bDel)
+    if (bDel) {
       continue;   // no need to calculate overlap rate, just omit the master word master_ctm[i];
+    }
+      
     // end:  if no deletion,  calcalate "overall" overlap rate with all the hotwords. 
     float overlaprate = 0;
-    if (master_ctm[i].dur > 0)  // deal with extrem case 
+    if (master_ctm[i].dur > 0) {
+      // deal with extrem case 
       overlaprate = overlap_dur / master_ctm[i].dur;
+    }
 
-    if (overlaprate < 0.5)  // only include the master word master_ctm[i] if total overlapping rate is less than 0.5
-      new_master_ctm.push_back(master_ctm[i]);// include this word in the final result       
+    if (overlaprate < 0.5) {
+      // only include the master word master_ctm[i] if total overlapping rate is less than 0.5
+      new_master_ctm.push_back(master_ctm[i]);// include this word in the final result
+    }
   }
+  
   //step 3 combine new_master_ctm and hwlist base on its start time into the final results
   len1 = new_master_ctm.size(); len2 = hwlist.size();
   int i = 0, j =0;
@@ -212,21 +239,27 @@ string CombineCtm(std::vector<lat_ctm> & master_ctm, std::vector<lat_ctm>& hot_c
   {
     if (new_master_ctm[i].start <= hwlist[j].start) {
       final_result += new_master_ctm[i].word + " ";
+      //std::cout << "Combined: " << new_master_ctm[i].word << std::endl;
       i++;
     }
     else {    
       final_result += hwlist[j].word + " ";
+      //std::cout << "Combined: " << hwlist[j].word  << std::endl;
       j++;
     }
   }  
   //add remaining master decoder words or hotwords into final result
   if (i < len1) {
-    for ( int k =i; k<len1; k++)
+    for ( int k =i; k<len1; k++) {
       final_result += new_master_ctm[k].word + " ";
+      //std::cout << "Combined: " << new_master_ctm[k].word  << std::endl;
+    }
   }
   else if (j < len2) {
-    for ( int k = j; k<len2; k++)
+    for ( int k = j; k<len2; k++) {
       final_result += hwlist[k].word + " ";
+      //std::cout << "Combined: " << hwlist[k].word  << std::endl;
+    }
   }
 
   return final_result;
@@ -1008,23 +1041,33 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
             std::istringstream str(adaptation_state_string);
             try {
               filter->adaptation_state->Read(str, false);
+              filter->hw_adaptation_state->Read(str, false);
             } catch (std::runtime_error& e) {
               GST_WARNING_OBJECT(filter, "Failed to read adaptation state from given string, resetting instead");
               delete filter->adaptation_state;
+              delete filter->hw_adaptation_state;
               filter->adaptation_state = new OnlineIvectorExtractorAdaptationState(
+                  filter->feature_info->ivector_extractor_info);
+              filter->hw_adaptation_state = new OnlineIvectorExtractorAdaptationState(
                   filter->feature_info->ivector_extractor_info);
             }
           } else {
             GST_DEBUG_OBJECT(filter, "Resetting adaptation state");
             delete filter->adaptation_state;
+            delete filter->hw_adaptation_state;
             filter->adaptation_state = new OnlineIvectorExtractorAdaptationState(
                 filter->feature_info->ivector_extractor_info);
+            filter->hw_adaptation_state = new OnlineIvectorExtractorAdaptationState(
+                filter->feature_info->ivector_extractor_info);                
           }
                       g_free(adaptation_state_string);
         } else {
           GST_DEBUG_OBJECT(filter, "Resetting adaptation state");
           delete filter->adaptation_state;
+          delete filter->hw_adaptation_state;
           filter->adaptation_state = new OnlineIvectorExtractorAdaptationState(
+              filter->feature_info->ivector_extractor_info);
+          filter->hw_adaptation_state = new OnlineIvectorExtractorAdaptationState(
               filter->feature_info->ivector_extractor_info);
         }
       }
@@ -1037,20 +1080,24 @@ static void gst_kaldinnet2onlinedecoder_set_property(GObject * object,
             std::istringstream str(cmvn_state_string);
             try {
               filter->cmvn_state->Read(str, false);
+              filter->hw_cmvn_state->Read(str, false);
             } catch (std::runtime_error& e) {
               GST_WARNING_OBJECT(filter, "Failed to read CMVN state from given string, resetting instead");
               delete filter->cmvn_state;
+              delete filter->hw_cmvn_state;
               gst_kaldinnet2onlinedecoder_reset_cmvn_state(filter);
             }
           } else {
             GST_DEBUG_OBJECT(filter, "Resetting CMVN state");
             delete filter->cmvn_state;
+            delete filter->hw_cmvn_state;
             gst_kaldinnet2onlinedecoder_reset_cmvn_state(filter);
           }
                       g_free(cmvn_state_string);
         } else {
           GST_DEBUG_OBJECT(filter, "Resetting CMVN state");
           delete filter->cmvn_state;
+          delete filter->hw_cmvn_state;          
           gst_kaldinnet2onlinedecoder_reset_cmvn_state(filter);
         }
       }
@@ -1191,6 +1238,7 @@ static void gst_kaldinnet2onlinedecoder_get_property(GObject * object,
       string_stream.clear();
       if (filter->adaptation_state) {
           filter->adaptation_state->Write(string_stream, false);
+          filter->hw_adaptation_state->Write(string_stream, false);
           g_value_set_string(value, string_stream.str().c_str());
       } else {
           g_value_set_string(value, "");
@@ -1200,6 +1248,7 @@ static void gst_kaldinnet2onlinedecoder_get_property(GObject * object,
       string_stream.clear();
       if (filter->cmvn_state) {
           filter->cmvn_state->Write(string_stream, false);
+          filter->hw_cmvn_state->Write(string_stream, false);
           g_value_set_string(value, string_stream.str().c_str());
       } else {
           g_value_set_string(value, "");
@@ -1449,10 +1498,6 @@ static std::string gst_kaldinnet2onlinedecoder_words_to_string(
     if (is_hotword) {
       s = filter->hword_syms->Find(words[i]);
     }
-    if ((s == "") && !is_hotword) {
-      // Incase of merging the results
-      s = filter->hword_syms->Find(words[i]);
-    }
 
     if (s == "")
       GST_ERROR_OBJECT(filter, "Word-id %d not in symbol table.", words[i]);
@@ -1505,7 +1550,7 @@ static std::string gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(
 }
 
 static std::vector<NBestResult> gst_kaldinnet2onlinedecoder_nbest_results(
-    Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat) {
+    Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, bool is_hotword=false) {
 
   std::vector<NBestResult> nbest_results;
 
@@ -1556,6 +1601,213 @@ static std::vector<NBestResult> gst_kaldinnet2onlinedecoder_nbest_results(
   }
   return nbest_results;
 }
+
+
+/**
+* @author:    
+* @modifier:  tlvu 
+* @date:      December 13, 2021
+* @describe:  Combine the best results using nbest.word_alignment
+*
+**/ 
+static std::string gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(
+    Gstkaldinnet2onlinedecoder *filter, const std::vector<WordAlignmentInfo> &master_wordalignment, const std::vector<WordAlignmentInfo> &hw_wordalignment) {
+  
+  /**
+  std::cout << "Processing the master wordlist" << std::endl;
+  for (size_t j = 0; j < master_wordalignment.size(); j++) {
+    WordAlignmentInfo word_alignment = master_wordalignment[j];
+    std::cout << "Word: " << filter->word_syms->Find(word_alignment.word_id) << ", Start frame: " << word_alignment.start_frame << ", Length in frames: " << word_alignment.length_in_frames << std::endl;
+  }
+
+  std::cout << "Processing the hotwordlist" << std::endl;
+  for (size_t j = 0; j < hw_wordalignment.size(); j++) {
+    WordAlignmentInfo word_alignment = hw_wordalignment[j];
+    std::cout << "Hotword: " << filter->hword_syms->Find(word_alignment.word_id) << ", Start frame: " << word_alignment.start_frame << ", Length in frames: " << word_alignment.length_in_frames << std::endl;
+  }
+  */
+  
+  std::string best_transcripts = "";
+  int m = 0; // Index of the master 1-best words
+  
+  if (hw_wordalignment.size() > 0) 
+  {
+    for (size_t i = 0; i < hw_wordalignment.size(); i++) 
+    {
+       WordAlignmentInfo hw_alignment_info = hw_wordalignment[i];
+       // FIXME: WORD from HW List
+       std::string hword = filter->hword_syms->Find(hw_alignment_info.word_id);
+       //std::cout << "-------------------------- Processing the hotword: " << hword << std::endl;
+           
+       // FIXME: Detect a HOTWORD
+       if (hword.length() > 2 && hword[0] == '_' &&  hword[1] == '_') 
+       {
+         std::replace(hword.begin(), hword.end(), '_', ' ');
+         // trim leading spaces
+         size_t startpos = hword.find_first_not_of(" \t");
+         if( string::npos != startpos ) {
+           hword = "《" + hword.substr( startpos ) + "》";
+         }
+       
+         // FIXME: WORD from MASTER List
+         std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+         if (word  == "<unk>") {
+           std::cout << "Ingore <unk> token" << std::endl;
+           word = "";
+         }
+
+         // If the master word is on the left side => Add the master word until there is the overlap
+         while (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames <= hw_alignment_info.start_frame) {
+           // The word is entirely before the hotword
+           if (word  == "<unk>") {
+             std::cout << "Ingore <unk> token" << std::endl;
+             word = "";
+           } else {
+	     best_transcripts += " " + word;
+	   }
+
+           /**
+           std::cout << "---" << std::endl;
+           std::cout << "Master word start frame: " << master_wordalignment[m].start_frame << std::endl;
+           std::cout << "Master word len in frames: " << master_wordalignment[m].length_in_frames << std::endl;
+           std::cout << "Hotword start frame: " << hw_alignment_info.start_frame << std::endl;
+           std::cout << "1. Select master word " << word << " over hotword: " <<  hword << std::endl;
+           std::cout << "---" << std::endl;
+           */ 
+           
+           // Consider the next word in the MASTER list
+           m = m + 1;
+           word = filter->word_syms->Find(master_wordalignment[m].word_id);
+         }
+           
+         if (master_wordalignment[m].start_frame < hw_alignment_info.start_frame) {
+           if (word  == "<unk>") {
+             std::cout << "Ingore <unk> token" << std::endl;
+             word = "";
+           }
+           // Checking the overlap
+           //std::cout << "---" << std::endl;
+           int overlap_frames = (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames - hw_alignment_info.start_frame);
+           BaseFloat overlap_ratio = ((float)overlap_frames / (float)hw_alignment_info.length_in_frames);
+           //std::cout << "Overlap frames: " << overlap_frames << " per " << hw_alignment_info.length_in_frames << " =~ " << overlap_ratio << std::endl;
+             
+           if (overlap_ratio >= 0.5) {
+             best_transcripts += " " + hword;
+             m = m + 1; // Skip the word in the MASTER list
+             //std::cout << "2. Select hotword " << hword << " over word: " <<  word << std::endl;
+           } else {
+             best_transcripts += " " + word; 
+             m = m + 1;
+             //std::cout << "3. Select master word " << word << " over hotword: " <<  hword << std::endl;
+           }
+           //std::cout << "---" << std::endl;
+           // End of checking the overlap
+           
+         } else if (master_wordalignment[m].start_frame == hw_alignment_info.start_frame) {
+         
+           // If the master and hotword have the same start frame => Choose the hotword, ignore the master word
+           std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+           if (word  == "<unk>") {
+             std::cout << "Ingore <unk> token" << std::endl;
+             word = "";
+           } else {
+	     best_transcripts += " " + hword;
+	   }
+
+           /**
+           std::cout << "---" << std::endl;
+           std::cout << "4. Select hotword " << hword << " over word: " <<  word << std::endl;
+           std::cout << "---" << std::endl;
+           */
+           
+           // TODO: Adding all master words on the right of the hotword under its spectrum
+           m = m + 1;
+           while (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames <= hw_alignment_info.start_frame + hw_alignment_info.length_in_frames) {
+             /**
+             std::cout << "---" << std::endl;
+             std::cout << "5. Skip the word " << word << std::endl;
+             std::cout << "---" << std::endl;
+             */
+             m = m + 1;
+           }
+             
+         } else {
+           std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+           // (master_wordalignment[m].start_frame > hw_alignment_info.start_frame)
+           best_transcripts += " " + hword;
+           
+           while (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames <= hw_alignment_info.start_frame + hw_alignment_info.length_in_frames) {
+             // If the master and hotword have the same start frame => Choose the hotword, ignore the master word  
+             /**
+             std::cout << "---" << std::endl;
+             std::cout << "6. Skip the word " <<  word << std::endl;
+             std::cout << "---" << std::endl;
+             */
+             m = m + 1;
+             
+           }
+           
+           /**
+           // If the master word starts after the hotword
+           word = filter->word_syms->Find(master_wordalignment[m].word_id);
+           {
+             
+             std::cout << "---" << std::endl;
+             std::cout << "7. Don't know what to do with this word " <<  word << std::endl;
+             std::cout << "---" << std::endl;
+           }
+           */
+         }
+       } else {
+         // 2. Seeing a normal word -> Adding the master word until the start time is == hotword.start
+         if (m > master_wordalignment.size()) {
+           // No more word to process
+           break;
+         }
+         // Adding a word from the master list, moving to the next master word
+         std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+         if ((word  == "<unk>") && (hword != "<unk>")) {
+           std::cout << "Ingore <unk> token, selecting hotword: " << hword << std::endl;
+           word = hword;
+         }
+	 /**
+         std::cout << "---" << std::endl;
+         std::cout << "8. Select master word " << word << std::endl;
+         std::cout << "---" << std::endl;
+         */
+         best_transcripts += " " + word;
+         m = m + 1;
+       }
+    } // end of for loop through hw_wordalignment
+    
+    // Adding remaining words in the MASTER list
+    while (m < master_wordalignment.size()) {
+      std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+      if (word  == "<unk>") {
+        std::cout << "Ingore <unk> token" << std::endl;
+        word = "";
+      } else {      
+        best_transcripts += " " + word;
+      }
+      m = m + 1;
+    }
+  } else {
+    // In case there is no words in the hotword
+    while (m < master_wordalignment.size()) {
+      std::string word = filter->word_syms->Find(master_wordalignment[m].word_id);
+      if (word  == "<unk>") {
+        std::cout << "Ingore <unk> token" << std::endl;
+        word = "";
+      } else {
+        best_transcripts += " " + word;
+      }
+      m = m + 1;
+    }
+  }
+  // std::cout << "Best transcripts combined: " << best_transcripts << std::endl;
+  return best_transcripts;
+}
+
 
 // @tlvu Nov 22, 2021: Adding parameter
 static std::string gst_kaldinnet2onlinedecoder_full_final_result_to_json(
@@ -1706,48 +1958,216 @@ static void gst_kaldinnet2onlinedecoder_final_combined_result(
   gst_kaldinnet2onlinedecoder_scale_lattice(filter, masterclat);
   gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, htclat);
 
-    std::vector<lat_ctm> master_ctm;
-    bool ok = ComputeCtm(masterclat, 
-                       *(filter->trans_model), 
-                       *(filter->word_boundary_info),
-                       filter->word_syms, 
-                       filter->lmwt_scale, 
-                       master_ctm);
+  std::vector<lat_ctm> master_ctm;
+  bool ok = ComputeCtm(masterclat, 
+                     *(filter->trans_model), 
+                     *(filter->word_boundary_info),
+                     filter->word_syms, 
+                     filter->lmwt_scale, 
+                     master_ctm);
 
-    std::vector<lat_ctm> hot_ctm;
-    ok = ComputeCtm(htclat,
-                   *(filter->trans_model), 
-                   *(filter->word_boundary_info),
-                   filter->hword_syms, 
-                   filter->hlmwt_scale, 
-                   hot_ctm);
+  std::vector<lat_ctm> hot_ctm;
+  ok = ComputeCtm(htclat,
+                 *(filter->trans_model), 
+                 *(filter->word_boundary_info),
+                 filter->hword_syms, 
+                 filter->hlmwt_scale, 
+                 hot_ctm);
 
-    std::string best_transcript = CombineCtm(master_ctm, hot_ctm);
+  std::string best_transcript = CombineCtm(master_ctm, hot_ctm);
 
-    GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
+  GST_DEBUG_OBJECT(filter, "Final: %s", best_transcript.c_str());
 
-    guint hyp_length = best_transcript.length();
-    *num_words=hyp_length;
+  guint hyp_length = best_transcript.length();
+  *num_words=hyp_length;
 
-    if (hyp_length > 0) {
-      GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
-      gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
-      gst_buffer_memset(buffer, hyp_length, '\n', 1);
-      gst_pad_push(filter->srcpad, buffer);
+  if (hyp_length > 0) {
+    GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
+    gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
+    gst_buffer_memset(buffer, hyp_length, '\n', 1);
+    gst_pad_push(filter->srcpad, buffer);
 
-      /* Emit a signal for applications. */
-      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
+    /* Emit a signal for applications. */
+    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
 
-      // @tlvu Nov 22, 2021: Adding parameter
-      std::string full_final_result_as_json =
-          gst_kaldinnet2onlinedecoder_full_final_combined_result_to_json(filter,  best_transcript);
-      GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
-      // std::cout << "#DEBUG " << full_final_result_as_json << std::endl;
-      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
+    // @tlvu Nov 22, 2021: Adding parameter
+    std::string full_final_result_as_json =
+        gst_kaldinnet2onlinedecoder_full_final_combined_result_to_json(filter,  best_transcript);
+    GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
+    // std::cout << "#DEBUG " << full_final_result_as_json << std::endl;
+    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
 
-    }
+  }
 }
 
+
+/**
+* @author:	      tlvu
+* @modifier:      tlvu
+* @date:	        December 13, 2021
+* @describe:      Combine the nbest results from the master and hotword decoders
+*
+**/ 
+static std::string gst_kaldinnet2onlinedecoder_full_final_nbest_result_to_json(
+    Gstkaldinnet2onlinedecoder * filter,
+    const FullFinalResult &full_final_master_result, string combined_result) {
+
+  json_t *root = json_object();
+  json_t *result_json_object = json_object();
+  json_object_set_new( root, "status", json_integer(0));
+
+  json_object_set_new( root, "result", result_json_object);
+
+  json_object_set_new( result_json_object, "final", json_true());
+
+  if (full_final_master_result.nbest_results.size() > 0) {
+    BaseFloat frame_shift = filter->feature_info->FrameShiftInSeconds();
+    if (filter->nnet_mode == NNET3) {
+      frame_shift *= filter->nnet3_decodable_opts->frame_subsampling_factor;
+    }
+    
+    //const std::vector<WordAlignmentInfo> hw_wordalignment = full_final_hw_result.nbest_results[0].word_alignment;
+    //const std::vector<WordAlignmentInfo> master_wordalignment = full_final_master_result.nbest_results[0].word_alignment;
+    //std::string best_combined_transcript = gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(filter, master_wordalignment, hw_wordalignment);
+      
+    json_object_set_new(root, "segment-start",  json_real(filter->segment_start_time));
+
+    json_object_set_new(root, "segment-length",  json_real(full_final_master_result.nbest_results[0].num_frames * frame_shift));
+    json_object_set_new(root, "total-length",  json_real(filter->total_time_decoded));
+    json_t *nbest_json_arr = json_array();
+    for(std::vector<NBestResult>::const_iterator it = full_final_master_result.nbest_results.begin();
+        it != full_final_master_result.nbest_results.end(); ++it) {
+      NBestResult nbest_result = *it;
+      json_t *nbest_result_json_object = json_object();
+      json_object_set_new(nbest_result_json_object, "transcript",
+                          json_string(combined_result.c_str()));
+      json_object_set_new(nbest_result_json_object, "likelihood",  json_real(nbest_result.likelihood));
+      json_array_append( nbest_json_arr, nbest_result_json_object );
+      if (nbest_result.phone_alignment.size() > 0) {
+        if (strcmp(filter->phone_syms_filename, "") == 0) {
+          GST_ERROR_OBJECT(filter, "Phoneme symbol table filename (phone-syms) must be set to output phone alignment.");
+        } else if (filter->phone_syms == NULL) {
+          GST_ERROR_OBJECT(filter, "Phoneme symbol table wasn't loaded correctly. Not outputting alignment.");
+        } else {
+          json_t *phone_alignment_json_arr = json_array();
+          for (size_t j = 0; j < nbest_result.phone_alignment.size(); j++) {
+            PhoneAlignmentInfo alignment_info = nbest_result.phone_alignment[j];
+            json_t *alignment_info_json_object = json_object();
+            std::string phone = filter->phone_syms->Find(alignment_info.phone_id);
+            json_object_set_new(alignment_info_json_object, "phone",
+                                json_string(phone.c_str()));
+            json_object_set_new(alignment_info_json_object, "start",
+                                json_real(alignment_info.start_frame * frame_shift));
+            json_object_set_new(alignment_info_json_object, "length",
+                                json_real(alignment_info.length_in_frames * frame_shift));
+            json_object_set_new(alignment_info_json_object, "confidence",
+                                json_real(alignment_info.confidence));
+            json_array_append(phone_alignment_json_arr, alignment_info_json_object);
+          }
+          json_object_set_new(nbest_result_json_object, "phone-alignment", phone_alignment_json_arr);
+        }
+      }
+      if (nbest_result.word_alignment.size() > 0) {
+        json_t *word_alignment_json_arr = json_array();
+        for (size_t j = 0; j < nbest_result.word_alignment.size(); j++) {
+          WordAlignmentInfo alignment_info = nbest_result.word_alignment[j];
+          json_t *alignment_info_json_object = json_object();
+          std::string word = filter->word_syms->Find(alignment_info.word_id);
+          json_object_set_new(alignment_info_json_object, "word",
+                              json_string(word.c_str()));
+          json_object_set_new(alignment_info_json_object, "start",
+                              json_real(alignment_info.start_frame * frame_shift));
+          json_object_set_new(alignment_info_json_object, "length",
+                              json_real(alignment_info.length_in_frames * frame_shift));
+          json_object_set_new(alignment_info_json_object, "confidence",
+                              json_real(alignment_info.confidence));
+          json_array_append(word_alignment_json_arr, alignment_info_json_object);
+        }
+        json_object_set_new(nbest_result_json_object, "word-alignment", word_alignment_json_arr);
+      }
+
+    }
+
+    json_object_set_new(result_json_object, "hypotheses", nbest_json_arr);
+  }
+
+  char *ret_strings = json_dumps(root, JSON_REAL_PRECISION(6));
+
+  json_decref(root);
+  std::string result;
+  result = ret_strings;
+  return result;
+}
+
+
+/**
+* @author:	      tlvu
+* @modifier:      tlvu
+* @date:	        December 13, 2021
+* @describe:      Combine the nbest results from the master and hotword decoders
+*
+**/ 
+static void gst_kaldinnet2onlinedecoder_final_nbest_combined_results (
+	Gstkaldinnet2onlinedecoder * filter, CompactLattice &master_clat, CompactLattice &hw_clat,
+	guint *num_words) {
+	
+  if (master_clat.NumStates() == 0) {
+    KALDI_WARN<< "Empty master lattice.";
+    return;
+  }
+  if (hw_clat.NumStates() == 0) {
+    KALDI_WARN<< "Empty hw lattice.";
+    return;
+  }
+
+  gst_kaldinnet2onlinedecoder_scale_lattice(filter, master_clat);
+  gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, hw_clat);
+
+  FullFinalResult full_final_master_result;
+  GST_DEBUG_OBJECT(filter, "Decoding n-best master results");
+  full_final_master_result.nbest_results = gst_kaldinnet2onlinedecoder_nbest_results(filter, master_clat, false);
+
+  FullFinalResult full_final_hw_result;
+  GST_DEBUG_OBJECT(filter, "Decoding n-best hotword results");
+  full_final_hw_result.nbest_results = gst_kaldinnet2onlinedecoder_nbest_results(filter, hw_clat, true);
+
+  /* 
+  // Combine the 1-best result based on word_alignment data structure
+  std::string best_combined_transcript = gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(filter, full_final_master_result.nbest_results[0].word_alignment, full_final_hw_result.nbest_results[0].word_alignment);
+  */
+
+  if (full_final_master_result.nbest_results.size() > 0) {
+    // @tlvu Nov 22, 2021
+    std::string best_master_transcript = gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, full_final_master_result.nbest_results[0].words, false);
+    std::cout<< "Master transcripts: " << best_master_transcript << std::endl;
+  } 
+  if (full_final_hw_result.nbest_results.size() > 0) {
+    // @tlvu Nov 22, 2021
+    std::string best_hw_transcript = gst_kaldinnet2onlinedecoder_words_in_hyp_to_string(filter, full_final_hw_result.nbest_results[0].words, true);
+    std::cout<< "Hotword transcripts: " << best_hw_transcript << std::endl;
+  }
+  
+  std::string best_transcript = gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(filter, full_final_master_result.nbest_results[0].word_alignment, full_final_hw_result.nbest_results[0].word_alignment);
+
+  guint hyp_length = best_transcript.length();
+
+  if (hyp_length > 0) {
+    GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
+    gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
+    gst_buffer_memset(buffer, hyp_length, '\n', 1);
+    gst_pad_push(filter->srcpad, buffer);
+    
+    // Emit a signal for applications. /
+    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
+
+    // @tlvu Nov 22, 2021: Adding parameter
+    std::string full_final_result_as_json =
+        gst_kaldinnet2onlinedecoder_full_final_nbest_result_to_json(filter, full_final_master_result, best_transcript);
+    GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
+    g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
+  }
+
+}
 
 
 /**
@@ -1787,22 +2207,27 @@ static void gst_kaldinnet2onlinedecoder_final_result(
     guint hyp_length = best_transcript.length();
     *num_words = full_final_result.nbest_results[0].words.size();
 
+    if (is_hotword) {
+      std::cout<< "Hotword transcripts: " << best_transcript << std::endl;
+    } else {
+      std::cout<< "Master transcripts: " << best_transcript << std::endl;
+    }
+    /**
     if (hyp_length > 0) {
       GstBuffer *buffer = gst_buffer_new_and_alloc(hyp_length + 1);
       gst_buffer_fill(buffer, 0, best_transcript.c_str(), hyp_length);
       gst_buffer_memset(buffer, hyp_length, '\n', 1);
       gst_pad_push(filter->srcpad, buffer);
+      
+      // Emit a signal for applications. /
+      // g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
 
-      /* Emit a signal for applications. */
-      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FINAL_RESULT_SIGNAL], 0, best_transcript.c_str());
-
-      // @tlvu Nov 22, 2021: Adding parameter
-      std::string full_final_result_as_json =
-          gst_kaldinnet2onlinedecoder_full_final_result_to_json(filter, full_final_result, is_hotword);
-      GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
-      g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
-
-    }
+      // // @tlvu Nov 22, 2021: Adding parameter
+      // std::string full_final_result_as_json =
+      //     gst_kaldinnet2onlinedecoder_full_final_result_to_json(filter, full_final_result, is_hotword);
+      // GST_DEBUG_OBJECT(filter, "Final JSON: %s", full_final_result_as_json.c_str());
+      // g_signal_emit(filter, gst_kaldinnet2onlinedecoder_signals[FULL_FINAL_RESULT_SIGNAL], 0, full_final_result_as_json.c_str());
+    } */
   }
 }
 
@@ -2331,11 +2756,15 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     std::cout << "Hotword beam: " << filter->hwdecoder_opts->beam << std::endl;
     std::cout << "Hotword lattice beam: " << filter->hwdecoder_opts->lattice_beam << std::endl;
   }
+  
+  OnlineNnet2FeaturePipeline hw_feature_pipeline(*(filter->feature_info));
+  hw_feature_pipeline.SetAdaptationState(*(filter->hw_adaptation_state));
+  hw_feature_pipeline.SetCmvnState(*(filter->hw_cmvn_state));
   SingleUtteranceNnet3Decoder *hwdecoder_p=new SingleUtteranceNnet3Decoder(*(filter->hwdecoder_opts),
                     *(filter->trans_model), 
                     *(filter->decodable_info_nnet3),
                     *(filter->decode_hfst),
-                    &feature_pipeline);
+                    &hw_feature_pipeline);
   
   Vector<BaseFloat> wave_part = Vector<BaseFloat>(chunk_length);
   GST_DEBUG_OBJECT(filter, "Reading audio in %d sample chunks...",
@@ -2385,7 +2814,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                           *(filter->trans_model), 
                                           *(filter->decodable_info_nnet3),
                                           *(filter->decode_hfst),
-                                          &feature_pipeline);
+                                          &hw_feature_pipeline);
         
       } else {
         if (_DEBUG) {
@@ -2414,6 +2843,9 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
     OnlineSilenceWeighting silence_weighting(*(filter->trans_model),
           *(filter->silence_weighting_config), 
           frame_subsampling_factor);
+    OnlineSilenceWeighting hw_silence_weighting(*(filter->trans_model),
+          *(filter->silence_weighting_config), 
+          frame_subsampling_factor);
     std::vector<std::pair<int32, BaseFloat> > delta_weights;
 
     BaseFloat last_traceback = 0.0;
@@ -2424,21 +2856,30 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       more_data = filter->audio_source->Read(&wave_part);
 
       feature_pipeline.AcceptWaveform(filter->sample_rate, wave_part);
+      hw_feature_pipeline.AcceptWaveform(filter->sample_rate, wave_part);
       if (!more_data) {
         feature_pipeline.InputFinished();
+        hw_feature_pipeline.InputFinished();
       }
       
       if (silence_weighting.Active() && 
-          feature_pipeline.IvectorFeature() != NULL) {
+          feature_pipeline.IvectorFeature() != NULL && 
+          hw_silence_weighting.Active() && 
+          hw_feature_pipeline.IvectorFeature() != NULL) {
         silence_weighting.ComputeCurrentTraceback(decoder.Decoder());
         if (_DUAL_DECODER) {
           // @tlvu Nov 19, 2021
-          silence_weighting.ComputeCurrentTraceback(hwdecoder_p->Decoder());
+          hw_silence_weighting.ComputeCurrentTraceback(hwdecoder_p->Decoder());
         }
         silence_weighting.GetDeltaWeights(feature_pipeline.NumFramesReady(), 
                                           frame_offset * frame_subsampling_factor,
                                           &delta_weights);
         feature_pipeline.UpdateFrameWeights(delta_weights);
+        
+        hw_silence_weighting.GetDeltaWeights(hw_feature_pipeline.NumFramesReady(), 
+                                          frame_offset * frame_subsampling_factor,
+                                          &delta_weights);
+        hw_feature_pipeline.UpdateFrameWeights(delta_weights);
       }
 
       /**
@@ -2496,8 +2937,8 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
           
           // @tlvu Nov 19, 2021
-          //Lattice hwlat;
-          //hwdecoder_p->GetBestPath(false, &hwlat);
+          Lattice hwlat;
+          hwdecoder_p->GetBestPath(false, &hwlat);
           //gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
           last_traceback += traceback_period_secs;
 
@@ -2583,10 +3024,15 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
       guint num_words = 0;    
       if (_DUAL_DECODER) { 
         // @tlvu Nov 19, 2021
-        guint num_hwords = 0;
-        // gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
+        //guint num_hwords = 0;
+        //gst_kaldinnet2onlinedecoder_final_result(filter, hw_lat, &num_hwords, true);
         
-        gst_kaldinnet2onlinedecoder_final_combined_result(filter, clat, hw_lat, &num_words);
+        //gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
+        
+        //gst_kaldinnet2onlinedecoder_final_combined_result(filter, clat, hw_lat, &num_words);
+        
+        // Combined n-best results
+        gst_kaldinnet2onlinedecoder_final_nbest_combined_results(filter, clat, hw_lat, &num_words);
         
       } else {
         gst_kaldinnet2onlinedecoder_final_result(filter, clat, &num_words);
@@ -2604,8 +3050,21 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
         // Only update adaptation state if the utterance contained enough words
         feature_pipeline.GetAdaptationState(filter->adaptation_state);
         feature_pipeline.GetCmvnState(filter->cmvn_state);
+        
+        if (_DUAL_DECODER) { 
+          hw_feature_pipeline.GetAdaptationState(filter->hw_adaptation_state);
+          hw_feature_pipeline.GetCmvnState(filter->hw_cmvn_state);
+        }
       }
-    
+      
+      /**
+      // @tlvu Dec 08, 2021
+   		CompactLattice final_clat;
+  		decoder.GetLattice(true, &final_clat);
+      BaseFloat inv_acoustic_scale = 1.0 / filter->nnet3_decodable_opts->acoustic_scale;
+      fst::ScaleLattice(fst::AcousticLatticeScale(inv_acoustic_scale), &final_clat);
+      */
+            
       // @victor Nov 25, 2021: Start
       struct stat hw_filestats_check;
       if (lstat(filter->hword_syms_filename, &hw_filestats_check) == 0) 
@@ -2643,7 +3102,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                         *(filter->trans_model), 
                                         *(filter->decodable_info_nnet3),
                                         *(filter->decode_hfst),
-                                        &feature_pipeline);
+                                        &hw_feature_pipeline);
 
         } else {
           if (_DEBUG) {
@@ -3187,6 +3646,7 @@ gst_kaldinnet2onlinedecoder_reset_cmvn_state(Gstkaldinnet2onlinedecoder * filter
                       &global_cmvn_stats);
   GST_DEBUG_OBJECT(filter, "Resetting online CMVN state");                      
   filter->cmvn_state = new OnlineCmvnState(global_cmvn_stats);
+  filter->hw_cmvn_state = new OnlineCmvnState(global_cmvn_stats);
 }
 
 static void
@@ -3241,7 +3701,9 @@ gst_kaldinnet2onlinedecoder_allocate(
 
   filter->adaptation_state = new OnlineIvectorExtractorAdaptationState(
       filter->feature_info->ivector_extractor_info);
-
+  filter->hw_adaptation_state = new OnlineIvectorExtractorAdaptationState(
+      filter->feature_info->ivector_extractor_info);
+      
   gst_kaldinnet2onlinedecoder_reset_cmvn_state(filter);
   
   return true;
@@ -3329,6 +3791,9 @@ static void gst_kaldinnet2onlinedecoder_finalize(GObject * object) {
   }
   if (filter->adaptation_state) {
     delete filter->adaptation_state;
+  }
+  if (filter->hw_adaptation_state) {
+    delete filter->hw_adaptation_state;
   }
   g_free(filter->lm_fst_name);
   g_free(filter->big_lm_const_arpa_name);

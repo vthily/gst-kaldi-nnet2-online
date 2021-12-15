@@ -41,6 +41,7 @@
 
 // support for nnet3
 #include "online2/online-nnet3-decoding.h"
+#include "online2/online-nnet2-feature-pipeline.h"
 
 #include "online2/onlinebin-util.h"
 #include "online2/online-timing.h"
@@ -136,6 +137,10 @@ struct _Gstkaldinnet2onlinedecoder {
   guint min_words_for_ivector;
   OnlineIvectorExtractorAdaptationState *adaptation_state;
   OnlineCmvnState *cmvn_state;
+  
+  OnlineIvectorExtractorAdaptationState *hw_adaptation_state;
+  OnlineCmvnState *hw_cmvn_state;
+  
   float segment_start_time;
   float total_time_decoded;
 
