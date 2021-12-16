@@ -1444,50 +1444,6 @@ static void gst_kaldinnet2onlinedecoder_scale_hwlattice(
   fst::ScaleLattice(fst::LatticeScale(filter->hlmwt_scale, 1.0), &clat);
 }
 
-/**
-* @author:    chunlei
-* @modifier:  tlvu 
-* @date:      Nov 19, 2021
-* @describe:  Compute the CTM
-*
-**/ 
-static bool gst_kaldinnet2onlinedecoder_compute_ctm(Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, std::vector<lat_ctm>& ctm, bool is_hotword = false ) {
-
-  if (is_hotword) {
-    gst_kaldinnet2onlinedecoder_scale_lattice(filter, clat);
-  } else {
-    gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, clat);
-  }
-
-  CompactLattice aligned_clat;
-  if (filter->word_boundary_info) {
-    if (WordAlignLattice(clat, *(filter->trans_model), *(filter->word_boundary_info), 0, &aligned_clat)) {
-      clat = aligned_clat;
-    }
-  }
-  
-  TopSortCompactLatticeIfNeeded(&aligned_clat);
-
-  std::vector<int32> words, times, lengths;
-  BaseFloat frame_shift = 0.03;
-
-  bool ok = CompactLatticeToWordAlignment(aligned_clat, &words, &times, &lengths);
-  ctm.clear();
-  for (size_t i = 0; i < words.size(); i++) {
-    if (words[i] == 0)  // Don't output anything for <eps> links, which correspond to silence....
-            continue;
-    
-    lat_ctm ctm_entry;
-    ctm_entry.start = frame_shift * times[i]; 
-    ctm_entry.dur = frame_shift * lengths[i];
-    ctm_entry.word  = filter->word_syms->Find(words[i]);
-    ctm.push_back(ctm_entry);
-    std::cout << ctm_entry.start << ' ' << ctm_entry.dur << ' ' << ctm_entry.word << std::endl;
-  }
-
-  return ok;
-}
-
 
 static std::string gst_kaldinnet2onlinedecoder_words_to_string(
     Gstkaldinnet2onlinedecoder *filter, const std::vector<int32> &words, bool is_hotword=false) {
@@ -1637,7 +1593,7 @@ static std::string gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(
        WordAlignmentInfo hw_alignment_info = hw_wordalignment[i];
        // FIXME: WORD from HW List
        std::string hword = filter->hword_syms->Find(hw_alignment_info.word_id);
-       //std::cout << "-------------------------- Processing the hotword: " << hword << std::endl;
+       std::cout << "-------------------------- Processing the hotword: " << hword << std::endl;
            
        // FIXME: Detect a HOTWORD
        if (hword.length() > 2 && hword[0] == '_' &&  hword[1] == '_') 
@@ -1663,8 +1619,8 @@ static std::string gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(
              std::cout << "Ingore <unk> token" << std::endl;
              word = "";
            } else {
-	     best_transcripts += " " + word;
-	   }
+      	     best_transcripts += " " + word;
+      	   }
 
            /**
            std::cout << "---" << std::endl;
@@ -1688,13 +1644,25 @@ static std::string gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(
            // Checking the overlap
            //std::cout << "---" << std::endl;
            int overlap_frames = (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames - hw_alignment_info.start_frame);
-           BaseFloat overlap_ratio = ((float)overlap_frames / (float)hw_alignment_info.length_in_frames);
-           //std::cout << "Overlap frames: " << overlap_frames << " per " << hw_alignment_info.length_in_frames << " =~ " << overlap_ratio << std::endl;
-             
+           BaseFloat overlap_ratio = ((float)overlap_frames / (float)master_wordalignment[m].length_in_frames);
+           std::cout << "Overlap frames: " << overlap_frames << " per " << hw_alignment_info.length_in_frames << " =~ " << overlap_ratio << std::endl;
+           
            if (overlap_ratio >= 0.5) {
              best_transcripts += " " + hword;
              m = m + 1; // Skip the word in the MASTER list
-             //std::cout << "2. Select hotword " << hword << " over word: " <<  word << std::endl;
+             std::cout << "2. Select hotword " << hword << " over word: " <<  word << std::endl;
+             
+             // TODO: Adding all master words on the right of the hotword under its spectrum
+             while (master_wordalignment[m].start_frame + master_wordalignment[m].length_in_frames <= hw_alignment_info.start_frame + hw_alignment_info.length_in_frames) {
+               word = filter->word_syms->Find(master_wordalignment[m].word_id);
+               /***/
+               std::cout << "---" << std::endl;
+               std::cout << "9. Skip the word " << word << std::endl;
+               std::cout << "---" << std::endl;
+               /**/
+               m = m + 1;
+             }
+             
            } else {
              best_transcripts += " " + word; 
              m = m + 1;
@@ -1711,8 +1679,8 @@ static std::string gst_kaldinnet2onlinedecoder_nbest_words_in_hyp_to_string(
              std::cout << "Ingore <unk> token" << std::endl;
              word = "";
            } else {
-	     best_transcripts += " " + hword;
-	   }
+             best_transcripts += " " + hword;
+           }
 
            /**
            std::cout << "---" << std::endl;
@@ -1955,7 +1923,7 @@ static void gst_kaldinnet2onlinedecoder_final_combined_result(
     return;
   }
 
-  gst_kaldinnet2onlinedecoder_scale_lattice(filter, masterclat);
+  //gst_kaldinnet2onlinedecoder_scale_lattice(filter, masterclat);
   gst_kaldinnet2onlinedecoder_scale_hwlattice(filter, htclat);
 
   std::vector<lat_ctm> master_ctm;
@@ -2487,20 +2455,6 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
         // hwdecoder.GetBestPath(false, &hwlat, NULL);
         // gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
 
-        /**
-        // @tlvu Nov 18, 2021 --- Get the lattice of the master ASR
-        CompactLattice clat;
-        decoder.GetLattice(false, &clat, NULL);
-        std::vector<lat_ctm> master_ctm; 
-        bool ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, clat, master_ctm, false);
-       
-        // @tlvu Nov 18, 2021 --- Get the lattice of the hotword ASR
-        CompactLattice hw_clat;
-        hwdecoder.GetLattice(false, &hw_clat, NULL);
-        std::vector<lat_ctm> hotword_ctm; 
-        bool hot_ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, hw_clat, hotword_ctm, true);
-        **/
-
         last_traceback += traceback_period_secs;
       }
     }
@@ -2550,16 +2504,6 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
       // @tlvu Nov 17, 2021
       CompactLattice hw_clat;
       hwdecoder.GetLattice(end_of_utterance, &hw_clat, NULL);
-      
-      /**
-      // @tlvu Nov 18, 2021 --- Get the lattice of the master ASR
-      std::vector<lat_ctm> master_ctm; 
-      bool ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, clat, master_ctm, false);
-     
-      // @tlvu Nov 18, 2021 --- Get the lattice of the hotword ASR
-      std::vector<lat_ctm> hotword_ctm; 
-      bool hot_ok = gst_kaldinnet2onlinedecoder_compute_ctm(filter, hw_clat, hotword_ctm, true);
-      **/
               
       GST_DEBUG_OBJECT(filter, "Lattice done");
       if ((filter->lm_fst != NULL) && (filter->big_lm_const_arpa != NULL)) {
@@ -2817,11 +2761,12 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                           *(filter->decode_hfst),
                                           &hw_feature_pipeline);
         
-      } else {
+      } 
+      /*else {
         if (_DEBUG) {
           std::cout << "[No changes at beginning]" << std::endl;
         }
-      }
+      }*/
     }
     // @victorNov 25, 2021: End
     /** 
@@ -2943,10 +2888,6 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           hwdecoder_p->GetBestPath(false, &hwlat);
           gst_kaldinnet2onlinedecoder_partial_hwresult(filter, hwlat);
           last_traceback += traceback_period_secs;
-
-
-          // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,*hwdecoder_p,false);
-          // gst_kaldinnet2onlinedecoder_partial_combined(filter,decoder,hwdecoder,false);
         }
       } else {
         if ((num_seconds_decoded - last_traceback > traceback_period_secs)
@@ -3058,15 +2999,7 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
           hw_feature_pipeline.GetCmvnState(filter->hw_cmvn_state);
         }
       }
-      
-      /**
-      // @tlvu Dec 08, 2021
-   		CompactLattice final_clat;
-  		decoder.GetLattice(true, &final_clat);
-      BaseFloat inv_acoustic_scale = 1.0 / filter->nnet3_decodable_opts->acoustic_scale;
-      fst::ScaleLattice(fst::AcousticLatticeScale(inv_acoustic_scale), &final_clat);
-      */
-            
+         
       // @victor Nov 25, 2021: Start
       struct stat hw_filestats_check;
       if (lstat(filter->hword_syms_filename, &hw_filestats_check) == 0) 
@@ -3106,11 +3039,12 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
                                         *(filter->decode_hfst),
                                         &hw_feature_pipeline);
 
-        } else {
+        } 
+        /*else {
           if (_DEBUG) {
             std::cout << "[No changes at the end]" << std::endl;
           }
-        }
+        }*/
       }
       // @victorNov 25, 2021: End
     
