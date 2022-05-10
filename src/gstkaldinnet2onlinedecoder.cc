@@ -1278,6 +1278,7 @@ static void gst_kaldinnet2onlinedecoder_final_result(
   }
 }
 
+/*
 static void gst_kaldinnet2onlinedecoder_partial_result(
     Gstkaldinnet2onlinedecoder * filter, const Lattice lat) {
   std::vector<int32> words;
@@ -1287,12 +1288,13 @@ static void gst_kaldinnet2onlinedecoder_partial_result(
   std::string transcript = gst_kaldinnet2onlinedecoder_words_to_string(filter, words);
   GST_DEBUG_OBJECT(filter, "Partial: %s", transcript.c_str());
   if (transcript.length() > 0) {
-    /* Emit a signal for applications. */
+    // Emit a signal for applications.
     g_signal_emit(filter,
                   gst_kaldinnet2onlinedecoder_signals[PARTIAL_RESULT_SIGNAL], 0,
                   transcript.c_str());
   }
 }
+*/
 
 static bool gst_kaldinnet2onlinedecoder_rescore_big_lm(
     Gstkaldinnet2onlinedecoder * filter, CompactLattice &clat, CompactLattice &result_lat) {
