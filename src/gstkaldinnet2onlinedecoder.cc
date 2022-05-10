@@ -1412,9 +1412,9 @@ static void gst_kaldinnet2onlinedecoder_threaded_decode_segment(Gstkaldinnet2onl
       num_seconds_decoded += filter->chunk_length_in_secs;
       if ((num_seconds_decoded - last_traceback > traceback_period_secs)
           && (decoder.NumFramesDecoded() > 0)) {
-        Lattice lat;
-        decoder.GetBestPath(false, &lat, NULL);
-        gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+        // Lattice lat;
+        // decoder.GetBestPath(false, &lat, NULL);
+        // gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
         last_traceback += traceback_period_secs;
       }
     }
@@ -1506,9 +1506,9 @@ static void gst_kaldinnet2onlinedecoder_unthreaded_decode_segment(Gstkaldinnet2o
 
     if ((num_seconds_decoded - last_traceback > traceback_period_secs)
         && (decoder.NumFramesDecoded() > 0)) {
-      Lattice lat;
-      decoder.GetBestPath(false, &lat);
-      gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+      //Lattice lat;
+      //decoder.GetBestPath(false, &lat);
+      //gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
       last_traceback += traceback_period_secs;
     }
   }
@@ -1609,9 +1609,9 @@ static void gst_kaldinnet2onlinedecoder_nnet3_unthreaded_decode_segment(Gstkaldi
 
       if ((num_seconds_decoded - last_traceback > traceback_period_secs)
           && (decoder.NumFramesDecoded() > 0)) {
-        Lattice lat;
-        decoder.GetBestPath(false, &lat);
-        gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
+        // Lattice lat;
+        // decoder.GetBestPath(false, &lat);
+        // gst_kaldinnet2onlinedecoder_partial_result(filter, lat);
         last_traceback += traceback_period_secs;
       }
     }
