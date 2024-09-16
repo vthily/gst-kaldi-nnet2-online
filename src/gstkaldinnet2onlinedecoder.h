@@ -23,6 +23,16 @@
 
 #include <gst/gst.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#ifndef WIN32
+#include <unistd.h>
+#endif
+
+#ifdef WIN32
+#define stat _stat
+#endif
+
 #include "./simple-options-gst.h"
 #include "./gst-audio-source.h"
 
@@ -31,6 +41,7 @@
 
 // support for nnet3
 #include "online2/online-nnet3-decoding.h"
+#include "online2/online-nnet2-feature-pipeline.h"
 
 #include "online2/onlinebin-util.h"
 #include "online2/online-timing.h"
@@ -40,6 +51,7 @@
 #include "lm/const-arpa-lm.h"
 #include "lat/word-align-lattice.h"
 #include "lat/determinize-lattice-pruned.h"
+
 
 namespace kaldi {
 
@@ -75,23 +87,31 @@ struct _Gstkaldinnet2onlinedecoder {
   gboolean do_endpointing;
   gboolean inverse_scale;
   float lmwt_scale;
+  float hlmwt_scale;
   GstBufferSource *audio_source;
   gboolean do_phone_alignment;
 
   gchar* model_rspecifier;
   gchar* fst_rspecifier;
+  gchar* hfst_rspecifier; // @tlvu
   gchar* word_syms_filename;
+  gchar* hword_syms_filename; // @tlvu
   gchar* phone_syms_filename;
   gchar* word_boundary_info_filename;
 
   SimpleOptionsGst *simple_options;
+  SimpleOptionsGst *hw_options;
+  
   OnlineEndpointConfig *endpoint_config;
   OnlineNnet2FeaturePipelineConfig *feature_config;
   OnlineNnet2DecodingThreadedConfig *nnet2_decoding_threaded_config;
   OnlineNnet2DecodingConfig *nnet2_decoding_config;
   // support for nnet3
   nnet3::NnetSimpleLoopedComputationOptions *nnet3_decodable_opts;
+  //nnet3::NnetSimpleLoopedComputationOptions *nnet3_decodable_hwopts;
+  
   LatticeFasterDecoderConfig *decoder_opts;  
+  LatticeFasterDecoderConfig *hwdecoder_opts;
   fst::DeterminizeLatticePrunedOptions *det_opts;
   
   OnlineSilenceWeightingConfig *silence_weighting_config;
@@ -102,7 +122,9 @@ struct _Gstkaldinnet2onlinedecoder {
   nnet3::AmNnetSimple *am_nnet3;
   nnet3::DecodableNnetSimpleLoopedInfo *decodable_info_nnet3;
   fst::Fst<fst::StdArc> *decode_fst;
+  fst::Fst<fst::StdArc> *decode_hfst; // @tlvu
   fst::SymbolTable *word_syms;
+  fst::SymbolTable *hword_syms; // @tlvu
   fst::SymbolTable *phone_syms;
   WordBoundaryInfo *word_boundary_info;
   int sample_rate;
@@ -115,6 +137,10 @@ struct _Gstkaldinnet2onlinedecoder {
   guint min_words_for_ivector;
   OnlineIvectorExtractorAdaptationState *adaptation_state;
   OnlineCmvnState *cmvn_state;
+  
+  OnlineIvectorExtractorAdaptationState *hw_adaptation_state;
+  OnlineCmvnState *hw_cmvn_state;
+  
   float segment_start_time;
   float total_time_decoded;
 
@@ -132,6 +158,14 @@ struct _Gstkaldinnet2onlinedecoderClass {
   void (*final_result)(GstElement *element, const gchar *result_str);
   void (*full_final_result)(GstElement *element, const gchar *result_str);
 };
+
+typedef struct  st_lat_ctm{
+  float start;
+  float dur;
+  string word;
+} lat_ctm;
+
+struct stat hw_wordlist_filestats;
 
 GType gst_kaldinnet2onlinedecoder_get_type(void);
 
